@@ -1,0 +1,39 @@
+{
+  "name": "mcp-memory",
+  "version": "0.3.0",
+  "description": "Persistent memory for LLMs via MCP — local SQLite knowledge graph with entities, relations, and cognitive decay",
+  "main": "server.js",
+  "bin": {
+    "mcp-memory": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "mcp",
+    "memory",
+    "llm",
+    "knowledge-graph",
+    "sqlite",
+    "model-context-protocol",
+    "ai",
+    "persistent-memory"
+  ],
+  "author": "marlian",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marlian/mcp-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marlian/mcp-memory/issues"
+  },
+  "homepage": "https://github.com/marlian/mcp-memory#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^11.9.1"
+  }
+}
