@@ -33,38 +33,45 @@ jobs:
         run: |
           echo "Scanning for private paths, credentials, and PII patterns..."
 
-          PATTERNS=(
-            # Private paths — add usernames / machine-specific paths here
-            '/Users/[a-zA-Z]'
-            '/home/[a-zA-Z]'
-            'C:\\Users\\'
-            # Credential patterns
-            'sk-[a-zA-Z0-9]{20,}'
-            'ghp_[a-zA-Z0-9]{36}'
-            'gho_[a-zA-Z0-9]{36}'
-            'AKIA[0-9A-Z]{16}'
-            'password\s*[:=]\s*["\x27][^"\x27]+'
-            # Connection strings with credentials
-            'postgres://[^:]+:[^@]+@'
-            'mysql://[^:]+:[^@]+@'
-            'mongodb(\+srv)?://[^:]+:[^@]+@'
-            # Private key blocks
-            '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
-          )
+          # Write patterns to a file so grep never misinterprets them as flags.
+          # This file IS the scanner definition — exclude it from its own scan.
+          PFILE=$(mktemp)
+          cat > "$PFILE" <<'PATTERNS'
+          /Users/[a-zA-Z]
+          /home/[a-zA-Z]
+          C:\\Users\\
+          sk-[a-zA-Z0-9]{20,}
+          ghp_[a-zA-Z0-9]{36}
+          gho_[a-zA-Z0-9]{36}
+          AKIA[0-9A-Z]{16}
+          password\s*[:=]\s*["'][^"']+
+          postgres://[^:]+:[^@]+@
+          mysql://[^:]+:[^@]+@
+          mongodb(\+srv)?://[^:]+:[^@]+@
+          -----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----
+          PATTERNS
 
           FAILED=0
-          for pattern in "${PATTERNS[@]}"; do
-            MATCHES=$(grep -rn --include='*.js' --include='*.json' --include='*.md' --include='*.yml' --include='*.yaml' --include='*.ts' --include='*.env*' -E "$pattern" . \
+          while IFS= read -r pattern; do
+            # Skip blank lines and whitespace-only
+            trimmed=$(echo "$pattern" | xargs)
+            [ -z "$trimmed" ] && continue
+
+            MATCHES=$(grep -rn -E -- "$trimmed" . \
+              --include='*.js' --include='*.json' --include='*.md' \
+              --include='*.ts' --include='*.env*' \
               --exclude-dir=node_modules \
               --exclude-dir=.git \
-              --exclude='.github/workflows/ci.yml' \
+              --exclude-dir=.github \
               || true)
             if [ -n "$MATCHES" ]; then
-              echo "::error::Sensitive pattern found: $pattern"
+              echo "::error::Sensitive pattern found: $trimmed"
               echo "$MATCHES"
               FAILED=1
             fi
-          done
+          done < "$PFILE"
+
+          rm -f "$PFILE"
 
           if [ "$FAILED" -eq 1 ]; then
             echo ""

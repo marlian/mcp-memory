@@ -115,10 +115,10 @@ This is for cross-project knowledge: user preferences, tool configurations, gene
 ### With `project` — workspace-scoped memory
 
 ```
-remember({ entity: "API", observation: "rate limit is 100/min", project: "/home/user/my-app" })
+remember({ entity: "API", observation: "rate limit is 100/min", project: "~/my-app" })
 ```
 
-Stored inside the project: `/home/user/my-app/.memory/memory.db`
+Stored inside the project: `~/my-app/.memory/memory.db`
 
 The database is **created lazily** — it doesn't exist until the first `remember` call with that project path. After that, all tools called with the same `project` parameter read and write to that project's isolated database.
 
