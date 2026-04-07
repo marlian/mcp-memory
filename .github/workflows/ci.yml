@@ -33,45 +33,38 @@ jobs:
         run: |
           echo "Scanning for private paths, credentials, and PII patterns..."
 
-          # Write patterns to a file so grep never misinterprets them as flags.
-          # This file IS the scanner definition — exclude it from its own scan.
-          PFILE=$(mktemp)
-          cat > "$PFILE" <<'PATTERNS'
-          /Users/[a-zA-Z]
-          /home/[a-zA-Z]
-          C:\\Users\\
-          sk-[a-zA-Z0-9]{20,}
-          ghp_[a-zA-Z0-9]{36}
-          gho_[a-zA-Z0-9]{36}
-          AKIA[0-9A-Z]{16}
-          password\s*[:=]\s*["'][^"']+
-          postgres://[^:]+:[^@]+@
-          mysql://[^:]+:[^@]+@
-          mongodb(\+srv)?://[^:]+:[^@]+@
-          -----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----
-          PATTERNS
-
           FAILED=0
-          while IFS= read -r pattern; do
-            # Skip blank lines and whitespace-only
-            trimmed=$(echo "$pattern" | xargs)
-            [ -z "$trimmed" ] && continue
 
-            MATCHES=$(grep -rn -E -- "$trimmed" . \
-              --include='*.js' --include='*.json' --include='*.md' \
-              --include='*.ts' --include='*.env*' \
-              --exclude-dir=node_modules \
-              --exclude-dir=.git \
-              --exclude-dir=.github \
-              || true)
-            if [ -n "$MATCHES" ]; then
-              echo "::error::Sensitive pattern found: $trimmed"
-              echo "$MATCHES"
+          check() {
+            local pattern="$1"
+            local matches
+            matches=$(grep -rn -E --include='*.js' --include='*.json' --include='*.md' --include='*.ts' --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.github -- "$pattern" . 2>/dev/null || true)
+            if [ -n "$matches" ]; then
+              echo "::error::Sensitive pattern found: $pattern"
+              echo "$matches"
               FAILED=1
             fi
-          done < "$PFILE"
+          }
 
-          rm -f "$PFILE"
+          # Private paths
+          check '/Users/[a-zA-Z]'
+          check '/home/[a-zA-Z]'
+          check 'C:\\Users\\'
+
+          # Credential patterns
+          check 'sk-[a-zA-Z0-9]{20,}'
+          check 'ghp_[a-zA-Z0-9]{36}'
+          check 'gho_[a-zA-Z0-9]{36}'
+          check 'AKIA[0-9A-Z]{16}'
+          check 'password\s*[:=]\s*"[^"]+'
+
+          # Connection strings with embedded credentials
+          check 'postgres://[^:]+:[^@]+@'
+          check 'mysql://[^:]+:[^@]+@'
+          check 'mongodb(\+srv)?://[^:]+:[^@]+@'
+
+          # Private keys
+          check 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
 
           if [ "$FAILED" -eq 1 ]; then
             echo ""
