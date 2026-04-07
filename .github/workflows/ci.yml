@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - run: npm install
+
+      - name: Smoke test
+        run: npm test
+
+  sensitive-data-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for sensitive data and private paths
+        run: |
+          echo "Scanning for private paths, credentials, and PII patterns..."
+
+          PATTERNS=(
+            # Private paths — add usernames / machine-specific paths here
+            '/Users/[a-zA-Z]'
+            '/home/[a-zA-Z]'
+            'C:\\Users\\'
+            # Credential patterns
+            'sk-[a-zA-Z0-9]{20,}'
+            'ghp_[a-zA-Z0-9]{36}'
+            'gho_[a-zA-Z0-9]{36}'
+            'AKIA[0-9A-Z]{16}'
+            'password\s*[:=]\s*["\x27][^"\x27]+'
+            # Connection strings with credentials
+            'postgres://[^:]+:[^@]+@'
+            'mysql://[^:]+:[^@]+@'
+            'mongodb(\+srv)?://[^:]+:[^@]+@'
+            # Private key blocks
+            '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
+          )
+
+          FAILED=0
+          for pattern in "${PATTERNS[@]}"; do
+            MATCHES=$(grep -rn --include='*.js' --include='*.json' --include='*.md' --include='*.yml' --include='*.yaml' --include='*.ts' --include='*.env*' -E "$pattern" . \
+              --exclude-dir=node_modules \
+              --exclude-dir=.git \
+              --exclude='.github/workflows/ci.yml' \
+              || true)
+            if [ -n "$MATCHES" ]; then
+              echo "::error::Sensitive pattern found: $pattern"
+              echo "$MATCHES"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "::error::Sensitive data detected. Review the matches above and remove private paths, credentials, or PII before merging."
+            exit 1
+          fi
+
+          echo "No sensitive data found."

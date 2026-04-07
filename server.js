@@ -761,6 +761,55 @@ function handleTool(defaultDb, name, args) {
 // MCP Server
 // ---------------------------------------------------------------------------
 async function main() {
+  // Self-test mode (for CI)
+  if (process.argv.includes('--test')) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-memory-test-'));
+    const testDb = initDb(path.join(tmpDir, 'test.db'));
+    try {
+      // Test remember + recall
+      const eid = upsertEntity(testDb, 'TestEntity', 'test');
+      addObservation(testDb, eid, 'test observation', 'user', 1.0);
+      const results = searchMemory(testDb, 'test', 5, 12);
+      if (!results.length) throw new Error('recall returned no results');
+
+      // Test relations
+      const eid2 = upsertEntity(testDb, 'OtherEntity', 'test');
+      testDb.prepare(
+        'INSERT INTO relations (from_entity_id, to_entity_id, relation_type) VALUES (?, ?, ?)'
+      ).run(eid, eid2, 'depends_on');
+
+      // Test events
+      const eventId = createEvent(testDb, 'Test event', null, 'test', null, null);
+      addObservation(testDb, eid, 'event observation', 'user', 1.0, eventId);
+      const event = getFullEvent(testDb, eventId, 12);
+      if (!event) throw new Error('event recall failed');
+
+      // Test decay calculation
+      const conf = decayedConfidence({ created_at: new Date().toISOString().replace('Z',''), confidence: 1.0, access_count: 0 }, 12);
+      if (typeof conf !== 'number' || conf > 1 || conf < 0) throw new Error('decay returned invalid confidence');
+
+      // Test project DB isolation
+      const projDir = path.join(tmpDir, 'fake-project');
+      fs.mkdirSync(projDir, { recursive: true });
+      const projDb = getDb(testDb, projDir);
+      const peid = upsertEntity(projDb, 'ProjectOnly', 'test');
+      addObservation(projDb, peid, 'project fact', 'user', 1.0);
+      const globalSearch = searchMemory(testDb, 'ProjectOnly', 5, 12);
+      if (globalSearch.some(r => r.entity_name === 'ProjectOnly')) throw new Error('project entity leaked to global DB');
+
+      console.log('All tests passed');
+      testDb.close();
+      projDb.close();
+      fs.rmSync(tmpDir, { recursive: true });
+      process.exit(0);
+    } catch (err) {
+      console.error('Test failed:', err.message);
+      testDb.close();
+      fs.rmSync(tmpDir, { recursive: true });
+      process.exit(1);
+    }
+  }
+
   const db = initDb(DB_PATH);
 
   const server = new Server(
