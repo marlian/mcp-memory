@@ -135,27 +135,44 @@ const DEFAULT_EXAMPLES = {
   event_types: ['meeting', 'decision', 'review', 'session'],
 };
 
-function loadExamples() {
-  const examplesPath = path.join(__dirname, 'examples.json');
+// Deep copy of DEFAULT_EXAMPLES so callers can mutate the returned object
+// without corrupting the module-level defaults. structuredClone is native
+// in Node >=17 (we require >=18 in package.json).
+function cloneDefaults() {
+  return structuredClone(DEFAULT_EXAMPLES);
+}
+
+function loadExamples(examplesPath) {
+  if (!examplesPath) examplesPath = path.join(__dirname, 'examples.json');
   let raw;
   try {
     raw = fs.readFileSync(examplesPath, 'utf8');
   } catch (err) {
-    if (err.code === 'ENOENT') return DEFAULT_EXAMPLES;
+    if (err.code === 'ENOENT') return cloneDefaults();
     console.error(`[mcp-memory] warning: cannot read examples.json: ${err.message}. Using defaults.`);
-    return DEFAULT_EXAMPLES;
+    return cloneDefaults();
   }
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
     console.error(`[mcp-memory] warning: invalid JSON in examples.json: ${err.message}. Using defaults.`);
-    return DEFAULT_EXAMPLES;
+    return cloneDefaults();
   }
-  const merged = { ...DEFAULT_EXAMPLES };
+  // Guard against valid JSON with the wrong top-level shape: null,
+  // arrays, or primitives would crash the merge loop below (e.g.
+  // null.entities throws TypeError). examples.json is documented as
+  // optional, so a shape error must never abort startup.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    console.error('[mcp-memory] warning: examples.json must contain a JSON object at the top level. Using defaults.');
+    return cloneDefaults();
+  }
+  const merged = cloneDefaults();
   for (const key of Object.keys(DEFAULT_EXAMPLES)) {
     if (Array.isArray(parsed[key]) && parsed[key].length > 0) {
-      merged[key] = parsed[key];
+      // Defensive: copy the user's array so later mutation of the
+      // returned object doesn't leak back into parsed state.
+      merged[key] = [...parsed[key]];
     }
   }
   return merged;
@@ -1145,6 +1162,81 @@ async function main() {
 
       // Test loadDotEnv with missing file: must be silent, no throw
       loadDotEnv(path.join(tmpDir, 'does-not-exist.env'));
+
+      // Test loadExamples — partial override merges with defaults
+      const examplesValidPath = path.join(tmpDir, 'examples-valid.json');
+      fs.writeFileSync(examplesValidPath, JSON.stringify({
+        entities: ['Zebra', 'Unicorn'],
+        relations: ['hunts', 'befriends'],
+      }));
+      const mergedValid = loadExamples(examplesValidPath);
+      if (!Array.isArray(mergedValid.entities) || mergedValid.entities[0] !== 'Zebra') {
+        throw new Error('loadExamples did not apply custom entities');
+      }
+      if (!Array.isArray(mergedValid.relations) || mergedValid.relations[0] !== 'hunts') {
+        throw new Error('loadExamples did not apply custom relations');
+      }
+      // Omitted keys must fall back to defaults
+      if (!Array.isArray(mergedValid.entity_types) || mergedValid.entity_types[0] !== DEFAULT_EXAMPLES.entity_types[0]) {
+        throw new Error('loadExamples did not preserve defaults for omitted keys');
+      }
+      if (!Array.isArray(mergedValid.event_labels) || mergedValid.event_labels[0] !== DEFAULT_EXAMPLES.event_labels[0]) {
+        throw new Error('loadExamples did not preserve defaults for omitted event_labels');
+      }
+
+      // Silence console.error during fallback tests (we expect warnings;
+      // we just don't want them cluttering test output).
+      const origErr = console.error;
+      console.error = () => {};
+
+      try {
+        // Test loadExamples — invalid JSON must fall back to defaults
+        const examplesInvalidPath = path.join(tmpDir, 'examples-invalid.json');
+        fs.writeFileSync(examplesInvalidPath, '{ this is not valid json');
+        const fb1 = loadExamples(examplesInvalidPath);
+        if (fb1.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on invalid JSON');
+        }
+
+        // Test loadExamples — top-level null must NOT crash (was the Risk)
+        const examplesNullPath = path.join(tmpDir, 'examples-null.json');
+        fs.writeFileSync(examplesNullPath, 'null');
+        const fb2 = loadExamples(examplesNullPath);
+        if (fb2.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on top-level null');
+        }
+
+        // Test loadExamples — top-level array must fall back cleanly
+        const examplesArrayPath = path.join(tmpDir, 'examples-array.json');
+        fs.writeFileSync(examplesArrayPath, '["not", "an", "object"]');
+        const fb3 = loadExamples(examplesArrayPath);
+        if (fb3.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on top-level array');
+        }
+
+        // Test loadExamples — top-level primitive must fall back cleanly
+        const examplesPrimPath = path.join(tmpDir, 'examples-prim.json');
+        fs.writeFileSync(examplesPrimPath, '42');
+        const fb4 = loadExamples(examplesPrimPath);
+        if (fb4.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on top-level primitive');
+        }
+
+        // Test loadExamples — missing file returns defaults silently
+        const fb5 = loadExamples(path.join(tmpDir, 'does-not-exist.json'));
+        if (fb5.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not return defaults on missing file');
+        }
+
+        // Test loadExamples — returned defaults must be a fresh copy, not
+        // the DEFAULT_EXAMPLES const itself (defensive copy invariant)
+        fb5.entities.push('MUTATED');
+        if (DEFAULT_EXAMPLES.entities.includes('MUTATED')) {
+          throw new Error('loadExamples returned shared reference to DEFAULT_EXAMPLES');
+        }
+      } finally {
+        console.error = origErr;
+      }
 
       console.log('All tests passed');
       testDb.close();
