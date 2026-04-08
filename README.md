@@ -96,7 +96,7 @@ The server speaks MCP over stdio. The spawn command is:
 node /absolute/path/to/mcp-memory/server.js
 ```
 
-No arguments required. Configuration is optional and uses environment variables — see [Environment variables](#environment-variables) for the full list and the three ways to set them.
+No arguments required. Configuration is optional and uses environment variables — see [Environment variables](#environment-variables) for the full list and the three ways to provide values, with defaults applying if none are provided.
 
 ## How project-scoped memory works
 
