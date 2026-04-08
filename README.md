@@ -332,7 +332,7 @@ Decay is computed at **read time** — no background jobs, no cron. The database
 
 ### How to set them
 
-There are three ways to set these variables. The server reads them with this precedence, **highest to lowest**:
+There are three external configuration sources. The server reads them with this precedence, **highest to lowest**, with hardcoded defaults applying when none are provided:
 
 1. **Client MCP config `env` block** — values set by the client when spawning the server (see [Pattern A](#pattern-a--one-clone-differentiated-in-the-client-config) above).
 2. **Shell environment** — variables exported in the parent process that spawns the client.
