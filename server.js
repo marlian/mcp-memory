@@ -201,7 +201,7 @@ const PROJECT_MEMORY_HALF_LIFE_WEEKS = parseFloat(process.env.PROJECT_MEMORY_HAL
 const projectDbs = new Map();
 
 // Resolve a project path to an absolute filesystem path. Accepts:
-//   - Absolute paths:     "/Users/alice/repo" -> unchanged
+//   - Absolute paths:     "/abs/path/to/repo" -> unchanged
 //   - Tilde-prefixed:     "~/repo"            -> "<home>/repo"
 //   - Bare tilde:         "~"                 -> "<home>"
 //   - Relative to home:   "repo"              -> "<home>/repo"
@@ -1182,15 +1182,15 @@ async function main() {
       // Test resolveProjectPath — pure function, synthetic home.
       // Covers the tilde-literal bug: passing "~/project" used to produce
       // "<home>/~/project" instead of expanding the tilde to home.
-      const FAKE_HOME = '/fake/home/alice';
+      const FAKE_HOME = '/fake-home/testuser';
       const rpCases = [
-        { input: '/abs/path',           expected: '/abs/path',                      note: 'absolute path unchanged' },
-        { input: '/Users/bob/repo',     expected: '/Users/bob/repo',                note: 'another absolute' },
-        { input: '~/repo',              expected: '/fake/home/alice/repo',          note: 'tilde-slash expanded' },
-        { input: '~/nested/path',       expected: '/fake/home/alice/nested/path',   note: 'tilde-slash deep' },
-        { input: '~',                   expected: '/fake/home/alice',               note: 'bare tilde' },
-        { input: 'repo',                expected: '/fake/home/alice/repo',          note: 'relative treated as home-relative' },
-        { input: 'nested/repo',         expected: '/fake/home/alice/nested/repo',   note: 'relative nested' },
+        { input: '/abs/path',           expected: '/abs/path',                           note: 'absolute path unchanged' },
+        { input: '/abs/other/repo',     expected: '/abs/other/repo',                     note: 'another absolute' },
+        { input: '~/repo',              expected: '/fake-home/testuser/repo',             note: 'tilde-slash expanded' },
+        { input: '~/nested/path',       expected: '/fake-home/testuser/nested/path',      note: 'tilde-slash deep' },
+        { input: '~',                   expected: '/fake-home/testuser',                  note: 'bare tilde' },
+        { input: 'repo',                expected: '/fake-home/testuser/repo',             note: 'relative treated as home-relative' },
+        { input: 'nested/repo',         expected: '/fake-home/testuser/nested/repo',      note: 'relative nested' },
       ];
       for (const tc of rpCases) {
         const got = resolveProjectPath(tc.input, FAKE_HOME);
