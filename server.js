@@ -13,6 +13,180 @@ const {
 const Database = require('better-sqlite3');
 
 // ---------------------------------------------------------------------------
+// .env file loader (no deps — process.env always takes precedence)
+// ---------------------------------------------------------------------------
+// If a .env file exists next to server.js, load it into process.env.
+// Values already set in process.env (from the client's MCP "env" block or
+// the shell) are never overwritten. The file is optional; missing is not
+// an error.
+//
+// Supported syntax:
+//   KEY=value                           # simple assignment
+//   KEY="value with spaces"             # double quotes
+//   KEY='value with spaces'             # single quotes
+//   KEY=value # trailing comment        # inline comment (unquoted only)
+//   KEY="value # literal hash"          # hash is literal inside quotes
+//   export KEY=value                    # bash-style export prefix (allowed)
+//   # full-line comment
+//   KEY=                                # empty string (POSIX: var exists)
+//
+// NOT supported (use process.env instead if you need them):
+//   - Variable interpolation (${OTHER})
+//   - Multi-line values (continuation or heredoc)
+//   - Escape sequences inside quotes (\n, \t, ...)
+//
+// Lines that don't match KEY=VALUE shape are skipped silently.
+
+// parseDotEnv is a pure function — takes file content string, returns
+// a plain object of parsed key/value pairs. Extracted for testability.
+function parseDotEnv(content) {
+  const result = {};
+  // Strip UTF-8 BOM if present (some Windows editors add it by default).
+  // Without this, the first key name would silently contain an invisible
+  // \uFEFF prefix and never match what the user expects.
+  if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
+  // Split on LF; this handles CRLF too because we strip \r below.
+  const lines = content.split('\n');
+  for (let rawLine of lines) {
+    // Strip trailing \r (CRLF handling)
+    if (rawLine.endsWith('\r')) rawLine = rawLine.slice(0, -1);
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) continue;
+
+    // Allow optional 'export ' prefix (bash-compatible)
+    const stripped = line.startsWith('export ') ? line.slice(7).trimStart() : line;
+
+    const eq = stripped.indexOf('=');
+    if (eq === -1) continue;
+
+    const key = stripped.slice(0, eq).trim();
+    if (!key) continue;
+    // Key must be a valid env var identifier
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+
+    let rest = stripped.slice(eq + 1);
+    // Drop leading whitespace but not trailing yet (depends on quoting)
+    rest = rest.replace(/^[ \t]+/, '');
+
+    let value;
+    if (rest.startsWith('"') || rest.startsWith("'")) {
+      // Quoted value: find the matching closing quote. Everything between
+      // the quotes is literal (no escape processing, no interpolation).
+      const quote = rest[0];
+      const closeIdx = rest.indexOf(quote, 1);
+      if (closeIdx === -1) {
+        // Unterminated quote — skip the whole line
+        continue;
+      }
+      value = rest.slice(1, closeIdx);
+      // Anything after the closing quote (other than whitespace or a
+      // trailing comment) is ignored.
+    } else {
+      // Unquoted: strip inline comment (first unescaped #), then trim.
+      // We treat any # preceded by whitespace as a comment start.
+      const hashIdx = rest.search(/\s#/);
+      if (hashIdx !== -1) {
+        value = rest.slice(0, hashIdx);
+      } else {
+        value = rest;
+      }
+      value = value.replace(/[ \t]+$/, '');
+    }
+
+    result[key] = value;
+  }
+  return result;
+}
+
+function loadDotEnv(envPath) {
+  if (!envPath) envPath = path.join(__dirname, '.env');
+  let content;
+  try {
+    content = fs.readFileSync(envPath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    console.error(`[mcp-memory] warning: cannot read .env: ${err.message}. Ignoring.`);
+    return;
+  }
+  const parsed = parseDotEnv(content);
+  for (const [key, value] of Object.entries(parsed)) {
+    // process.env always wins — only fill in values not already set
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+loadDotEnv();
+
+// ---------------------------------------------------------------------------
+// Tool description examples (optional override via examples.json)
+// ---------------------------------------------------------------------------
+// Tool descriptions include example values to guide the model. Defaults below
+// are intentionally generic. To tailor them to a specific deployment (e.g.
+// your team's jargon, a personal knowledge base), create an examples.json
+// next to server.js with any of the keys below. Unknown keys are ignored,
+// missing keys fall back to the default.
+const DEFAULT_EXAMPLES = {
+  entities: ['Alice', 'ProjectX', 'React'],
+  entity_types: ['person', 'project', 'technology'],
+  relations: ['works_with', 'uses', 'depends_on'],
+  event_labels: ['Weekly standup', 'Architecture decision', 'Debugging session'],
+  event_types: ['meeting', 'decision', 'review', 'session'],
+};
+
+// Deep copy of DEFAULT_EXAMPLES so callers can mutate the returned object
+// without corrupting the module-level defaults. structuredClone is native
+// in Node >=17 (we require >=18 in package.json).
+function cloneDefaults() {
+  return structuredClone(DEFAULT_EXAMPLES);
+}
+
+function loadExamples(examplesPath) {
+  if (!examplesPath) examplesPath = path.join(__dirname, 'examples.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(examplesPath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return cloneDefaults();
+    console.error(`[mcp-memory] warning: cannot read examples.json: ${err.message}. Using defaults.`);
+    return cloneDefaults();
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(`[mcp-memory] warning: invalid JSON in examples.json: ${err.message}. Using defaults.`);
+    return cloneDefaults();
+  }
+  // Guard against valid JSON with the wrong top-level shape: null,
+  // arrays, or primitives would crash the merge loop below (e.g.
+  // null.entities throws TypeError). examples.json is documented as
+  // optional, so a shape error must never abort startup.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    console.error('[mcp-memory] warning: examples.json must contain a JSON object at the top level. Using defaults.');
+    return cloneDefaults();
+  }
+  const merged = cloneDefaults();
+  for (const key of Object.keys(DEFAULT_EXAMPLES)) {
+    if (Array.isArray(parsed[key]) && parsed[key].length > 0) {
+      // Defensive: copy the user's array so later mutation of the
+      // returned object doesn't leak back into parsed state.
+      merged[key] = [...parsed[key]];
+    }
+  }
+  return merged;
+}
+
+const EXAMPLES = loadExamples();
+
+// Format an array of strings as a comma-separated, quoted list for embedding
+// in tool description strings. ['a', 'b'] -> '"a", "b"'
+function exFmt(arr) {
+  return arr.map(v => `"${v}"`).join(', ');
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 const DB_PATH = process.env.MEMORY_DB_PATH
@@ -26,9 +200,25 @@ const PROJECT_MEMORY_HALF_LIFE_WEEKS = parseFloat(process.env.PROJECT_MEMORY_HAL
 // ---------------------------------------------------------------------------
 const projectDbs = new Map();
 
-function resolveProjectPath(project) {
+// Resolve a project path to an absolute filesystem path. Accepts:
+//   - Absolute paths:     "/abs/path/to/repo" -> unchanged
+//   - Tilde-prefixed:     "~/repo"            -> "<home>/repo"
+//   - Bare tilde:         "~"                 -> "<home>"
+//   - Relative to home:   "repo"              -> "<home>/repo"
+// The tilde cases matter because some clients pass "~/project" literally
+// and path.join(home, "~/project") would produce "<home>/~/project" —
+// a literal tilde directory, which is a classic footgun.
+//
+// `homedir` is a parameter (not a hardcoded os.homedir() call) so the
+// pure function can be unit-tested with synthetic homes.
+function resolveProjectPath(project, homedir) {
+  if (!homedir) homedir = os.homedir();
   if (path.isAbsolute(project)) return project;
-  return path.join(os.homedir(), project);
+  if (project === '~') return homedir;
+  if (project.startsWith('~/') || project.startsWith('~\\')) {
+    return path.join(homedir, project.slice(2));
+  }
+  return path.join(homedir, project);
 }
 
 function getDb(defaultDb, project) {
@@ -408,8 +598,8 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        entity: { type: 'string', description: 'Entity name (e.g. "Alice", "ProjectX", "React")' },
-        entity_type: { type: 'string', description: 'Optional type (e.g. "person", "project", "technology")' },
+        entity: { type: 'string', description: `Entity name (e.g. ${exFmt(EXAMPLES.entities)})` },
+        entity_type: { type: 'string', description: `Optional type (e.g. ${exFmt(EXAMPLES.entity_types)})` },
         observation: { type: 'string', description: 'The fact to remember — one atomic piece of information' },
         source: { type: 'string', enum: ['user', 'inferred', 'session'], description: 'Where this fact comes from (default: user)' },
         confidence: { type: 'number', description: 'Confidence 0.0-1.0 (default: 1.0 for user-stated facts)' },
@@ -479,7 +669,7 @@ const TOOLS = [
       properties: {
         from: { type: 'string', description: 'Source entity name' },
         to: { type: 'string', description: 'Target entity name' },
-        relation_type: { type: 'string', description: 'Relation type (e.g. "works_with", "uses", "depends_on")' },
+        relation_type: { type: 'string', description: `Relation type (e.g. ${exFmt(EXAMPLES.relations)})` },
         context: { type: 'string', description: 'Optional context for the relation' },
         project: { type: 'string', description: 'Project workspace path for project-scoped memory (absolute or relative to ~). Omit for global memory.' },
       },
@@ -504,7 +694,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        entity_type: { type: 'string', description: 'Filter by type (e.g. "person", "project")' },
+        entity_type: { type: 'string', description: `Filter by type (e.g. ${exFmt(EXAMPLES.entity_types.slice(0, 2))})` },
         limit: { type: 'number', description: 'Max results (default 50)' },
         project: { type: 'string', description: 'Project workspace path for project-scoped memory (absolute or relative to ~). Omit for global memory.' },
       },
@@ -517,9 +707,9 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        label: { type: 'string', description: 'Event label (e.g. "Weekly standup", "Architecture decision", "Debugging session")' },
+        label: { type: 'string', description: `Event label (e.g. ${exFmt(EXAMPLES.event_labels)})` },
         event_date: { type: 'string', description: 'When the event happened (ISO8601 date or datetime, e.g. "2025-04-01")' },
-        event_type: { type: 'string', description: 'Event type (e.g. "meeting", "decision", "review", "session")' },
+        event_type: { type: 'string', description: `Event type (e.g. ${exFmt(EXAMPLES.event_types)})` },
         context: { type: 'string', description: 'Optional free-form context about the event' },
         expires_at: { type: 'string', description: 'Optional expiry datetime (ISO8601). Event auto-hides after this time.' },
         observations: {
@@ -549,7 +739,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Free-text search on event labels' },
-        event_type: { type: 'string', description: 'Filter by event type (e.g. "meeting", "decision")' },
+        event_type: { type: 'string', description: `Filter by event type (e.g. ${exFmt(EXAMPLES.event_types.slice(0, 2))})` },
         date_from: { type: 'string', description: 'Start date filter (ISO8601)' },
         date_to: { type: 'string', description: 'End date filter (ISO8601)' },
         limit: { type: 'number', description: 'Max results (default 20)' },
@@ -797,6 +987,293 @@ async function main() {
       const globalSearch = searchMemory(testDb, 'ProjectOnly', 5, 12);
       if (globalSearch.some(r => r.entity_name === 'ProjectOnly')) throw new Error('project entity leaked to global DB');
 
+      // Test examples system — format helper
+      if (exFmt(['a', 'b', 'c']) !== '"a", "b", "c"') throw new Error('exFmt format is wrong');
+      if (exFmt([]) !== '') throw new Error('exFmt empty array should yield empty string');
+      if (exFmt(['solo']) !== '"solo"') throw new Error('exFmt single value is wrong');
+
+      // Test examples system — EXAMPLES is populated with all required keys
+      const requiredKeys = ['entities', 'entity_types', 'relations', 'event_labels', 'event_types'];
+      for (const k of requiredKeys) {
+        if (!Array.isArray(EXAMPLES[k]) || EXAMPLES[k].length === 0) {
+          throw new Error(`EXAMPLES.${k} missing or empty`);
+        }
+      }
+
+      // Test examples system — tool descriptions actually embed the examples
+      const rememberTool = TOOLS.find(t => t.name === 'remember');
+      if (!rememberTool) throw new Error('remember tool not found');
+      const entityDesc = rememberTool.inputSchema.properties.entity.description;
+      if (!entityDesc.includes(EXAMPLES.entities[0])) {
+        throw new Error('tool description does not embed current EXAMPLES.entities');
+      }
+
+      // Test .env loader — must not throw when file is absent
+      // (loadDotEnv was already called at module load; we verify it is idempotent
+      // and safe to invoke again with no file present)
+      const envBefore = process.env.MEMORY_DB_PATH;
+      loadDotEnv();
+      if (process.env.MEMORY_DB_PATH !== envBefore) {
+        throw new Error('loadDotEnv mutated an already-set env var');
+      }
+
+      // Test parseDotEnv — pure function, table-driven test of edge cases
+      const parseCases = [
+        {
+          name: 'simple KEY=value',
+          input: 'FOO=bar',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'multiple keys',
+          input: 'FOO=bar\nBAZ=qux',
+          expect: { FOO: 'bar', BAZ: 'qux' },
+        },
+        {
+          name: 'double-quoted value',
+          input: 'FOO="hello world"',
+          expect: { FOO: 'hello world' },
+        },
+        {
+          name: 'single-quoted value',
+          input: "FOO='hello world'",
+          expect: { FOO: 'hello world' },
+        },
+        {
+          name: 'inline comment (unquoted)',
+          input: 'FOO=bar # this is a comment',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'inline comment with no space before hash',
+          input: 'FOO=bar #comment',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'hash inside double quotes is literal',
+          input: 'FOO="value # not a comment"',
+          expect: { FOO: 'value # not a comment' },
+        },
+        {
+          name: 'hash inside single quotes is literal',
+          input: "FOO='value # not a comment'",
+          expect: { FOO: 'value # not a comment' },
+        },
+        {
+          name: 'full-line comment ignored',
+          input: '# comment\nFOO=bar',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'blank lines ignored',
+          input: '\n\nFOO=bar\n\n',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'empty value is empty string',
+          input: 'FOO=',
+          expect: { FOO: '' },
+        },
+        {
+          name: 'export prefix (bash-style)',
+          input: 'export FOO=bar',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'export prefix with quoted value',
+          input: 'export FOO="hello world"',
+          expect: { FOO: 'hello world' },
+        },
+        {
+          name: 'CRLF line endings',
+          input: 'FOO=bar\r\nBAZ=qux\r\n',
+          expect: { FOO: 'bar', BAZ: 'qux' },
+        },
+        {
+          name: 'leading/trailing whitespace on unquoted value',
+          input: 'FOO=  bar  ',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'whitespace preserved inside double quotes',
+          input: 'FOO="  spaced  "',
+          expect: { FOO: '  spaced  ' },
+        },
+        {
+          name: 'path-like value with slashes',
+          input: 'MEMORY_DB_PATH=/tmp/foo/bar.db',
+          expect: { MEMORY_DB_PATH: '/tmp/foo/bar.db' },
+        },
+        {
+          name: 'path-like value with inline comment',
+          input: 'MEMORY_DB_PATH=/tmp/foo.db # use tmp for dev',
+          expect: { MEMORY_DB_PATH: '/tmp/foo.db' },
+        },
+        {
+          name: 'numeric value',
+          input: 'MEMORY_HALF_LIFE_WEEKS=26',
+          expect: { MEMORY_HALF_LIFE_WEEKS: '26' },
+        },
+        {
+          name: 'malformed line without equals is skipped',
+          input: 'NOT_AN_ASSIGNMENT\nFOO=bar',
+          expect: { FOO: 'bar' },
+        },
+        {
+          name: 'key with invalid characters is skipped',
+          input: '123FOO=bar\nVALID=ok',
+          expect: { VALID: 'ok' },
+        },
+        {
+          name: 'unterminated quote skips line',
+          input: 'FOO="unterminated\nBAZ=qux',
+          expect: { BAZ: 'qux' },
+        },
+        {
+          name: 'UTF-8 BOM is stripped',
+          input: '\uFEFFFOO=bar',
+          expect: { FOO: 'bar' },
+        },
+      ];
+
+      for (const tc of parseCases) {
+        const got = parseDotEnv(tc.input);
+        const gotKeys = Object.keys(got).sort();
+        const expKeys = Object.keys(tc.expect).sort();
+        if (gotKeys.length !== expKeys.length || gotKeys.some((k, i) => k !== expKeys[i])) {
+          throw new Error(`parseDotEnv "${tc.name}": key mismatch. got ${JSON.stringify(gotKeys)}, expected ${JSON.stringify(expKeys)}`);
+        }
+        for (const k of expKeys) {
+          if (got[k] !== tc.expect[k]) {
+            throw new Error(`parseDotEnv "${tc.name}": value mismatch for ${k}. got ${JSON.stringify(got[k])}, expected ${JSON.stringify(tc.expect[k])}`);
+          }
+        }
+      }
+
+      // Test loadDotEnv end-to-end: create a temp .env, load it, verify
+      // process.env is populated but existing values are preserved.
+      const tmpEnvPath = path.join(tmpDir, 'test.env');
+      fs.writeFileSync(tmpEnvPath,
+        'MCP_MEMORY_TEST_NEW=new_value\n' +
+        'MCP_MEMORY_TEST_EXISTING=from_file\n' +
+        '# a comment line\n' +
+        'MCP_MEMORY_TEST_COMMENTED=actual_value # trailing\n'
+      );
+      // Pre-set one var to verify process.env wins
+      process.env.MCP_MEMORY_TEST_EXISTING = 'from_process';
+      loadDotEnv(tmpEnvPath);
+      if (process.env.MCP_MEMORY_TEST_NEW !== 'new_value') {
+        throw new Error(`loadDotEnv did not inject new value (got: ${process.env.MCP_MEMORY_TEST_NEW})`);
+      }
+      if (process.env.MCP_MEMORY_TEST_EXISTING !== 'from_process') {
+        throw new Error(`loadDotEnv overwrote existing process.env value (got: ${process.env.MCP_MEMORY_TEST_EXISTING})`);
+      }
+      if (process.env.MCP_MEMORY_TEST_COMMENTED !== 'actual_value') {
+        throw new Error(`loadDotEnv did not strip inline comment (got: ${process.env.MCP_MEMORY_TEST_COMMENTED})`);
+      }
+      // Cleanup test env vars
+      delete process.env.MCP_MEMORY_TEST_NEW;
+      delete process.env.MCP_MEMORY_TEST_EXISTING;
+      delete process.env.MCP_MEMORY_TEST_COMMENTED;
+
+      // Test loadDotEnv with missing file: must be silent, no throw
+      loadDotEnv(path.join(tmpDir, 'does-not-exist.env'));
+
+      // Test resolveProjectPath — pure function, synthetic home.
+      // Covers the tilde-literal bug: passing "~/project" used to produce
+      // "<home>/~/project" instead of expanding the tilde to home.
+      const FAKE_HOME = '/fake-home/testuser';
+      const rpCases = [
+        { input: '/abs/path',           expected: '/abs/path',                           note: 'absolute path unchanged' },
+        { input: '/abs/other/repo',     expected: '/abs/other/repo',                     note: 'another absolute' },
+        { input: '~/repo',              expected: '/fake-home/testuser/repo',             note: 'tilde-slash expanded' },
+        { input: '~/nested/path',       expected: '/fake-home/testuser/nested/path',      note: 'tilde-slash deep' },
+        { input: '~',                   expected: '/fake-home/testuser',                  note: 'bare tilde' },
+        { input: 'repo',                expected: '/fake-home/testuser/repo',             note: 'relative treated as home-relative' },
+        { input: 'nested/repo',         expected: '/fake-home/testuser/nested/repo',      note: 'relative nested' },
+      ];
+      for (const tc of rpCases) {
+        const got = resolveProjectPath(tc.input, FAKE_HOME);
+        if (got !== tc.expected) {
+          throw new Error(`resolveProjectPath "${tc.note}": input=${JSON.stringify(tc.input)} expected=${tc.expected} got=${got}`);
+        }
+      }
+
+      // Test loadExamples — partial override merges with defaults
+      const examplesValidPath = path.join(tmpDir, 'examples-valid.json');
+      fs.writeFileSync(examplesValidPath, JSON.stringify({
+        entities: ['Zebra', 'Unicorn'],
+        relations: ['hunts', 'befriends'],
+      }));
+      const mergedValid = loadExamples(examplesValidPath);
+      if (!Array.isArray(mergedValid.entities) || mergedValid.entities[0] !== 'Zebra') {
+        throw new Error('loadExamples did not apply custom entities');
+      }
+      if (!Array.isArray(mergedValid.relations) || mergedValid.relations[0] !== 'hunts') {
+        throw new Error('loadExamples did not apply custom relations');
+      }
+      // Omitted keys must fall back to defaults
+      if (!Array.isArray(mergedValid.entity_types) || mergedValid.entity_types[0] !== DEFAULT_EXAMPLES.entity_types[0]) {
+        throw new Error('loadExamples did not preserve defaults for omitted keys');
+      }
+      if (!Array.isArray(mergedValid.event_labels) || mergedValid.event_labels[0] !== DEFAULT_EXAMPLES.event_labels[0]) {
+        throw new Error('loadExamples did not preserve defaults for omitted event_labels');
+      }
+
+      // Silence console.error during fallback tests (we expect warnings;
+      // we just don't want them cluttering test output).
+      const origErr = console.error;
+      console.error = () => {};
+
+      try {
+        // Test loadExamples — invalid JSON must fall back to defaults
+        const examplesInvalidPath = path.join(tmpDir, 'examples-invalid.json');
+        fs.writeFileSync(examplesInvalidPath, '{ this is not valid json');
+        const fb1 = loadExamples(examplesInvalidPath);
+        if (fb1.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on invalid JSON');
+        }
+
+        // Test loadExamples — top-level null must NOT crash (was the Risk)
+        const examplesNullPath = path.join(tmpDir, 'examples-null.json');
+        fs.writeFileSync(examplesNullPath, 'null');
+        const fb2 = loadExamples(examplesNullPath);
+        if (fb2.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on top-level null');
+        }
+
+        // Test loadExamples — top-level array must fall back cleanly
+        const examplesArrayPath = path.join(tmpDir, 'examples-array.json');
+        fs.writeFileSync(examplesArrayPath, '["not", "an", "object"]');
+        const fb3 = loadExamples(examplesArrayPath);
+        if (fb3.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on top-level array');
+        }
+
+        // Test loadExamples — top-level primitive must fall back cleanly
+        const examplesPrimPath = path.join(tmpDir, 'examples-prim.json');
+        fs.writeFileSync(examplesPrimPath, '42');
+        const fb4 = loadExamples(examplesPrimPath);
+        if (fb4.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not fall back on top-level primitive');
+        }
+
+        // Test loadExamples — missing file returns defaults silently
+        const fb5 = loadExamples(path.join(tmpDir, 'does-not-exist.json'));
+        if (fb5.entities[0] !== DEFAULT_EXAMPLES.entities[0]) {
+          throw new Error('loadExamples did not return defaults on missing file');
+        }
+
+        // Test loadExamples — returned defaults must be a fresh copy, not
+        // the DEFAULT_EXAMPLES const itself (defensive copy invariant)
+        fb5.entities.push('MUTATED');
+        if (DEFAULT_EXAMPLES.entities.includes('MUTATED')) {
+          throw new Error('loadExamples returned shared reference to DEFAULT_EXAMPLES');
+        }
+      } finally {
+        console.error = origErr;
+      }
+
       console.log('All tests passed');
       testDb.close();
       projDb.close();
@@ -813,7 +1290,7 @@ async function main() {
   const db = initDb(DB_PATH);
 
   const server = new Server(
-    { name: 'memory', version: '0.3.0' },
+    { name: 'memory', version: '0.4.0' },
     { capabilities: { tools: {} } }
   );
 
