@@ -85,7 +85,7 @@ function parseDotEnv(content) {
     } else {
       // Unquoted: strip inline comment (first unescaped #), then trim.
       // We treat any # preceded by whitespace as a comment start.
-      const hashIdx = rest.search(/(^|\s)#/);
+      const hashIdx = rest.search(/\s#/);
       if (hashIdx !== -1) {
         value = rest.slice(0, hashIdx);
       } else {
