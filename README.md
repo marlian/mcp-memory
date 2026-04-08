@@ -212,11 +212,11 @@ Client config becomes trivial:
   "mcpServers": {
     "memory": {
       "command": "node",
-      "args": ["/Users/you/mcp-memory-general/server.js"]
+      "args": ["/path/to/mcp-memory-general/server.js"]
     },
     "private_memory": {
       "command": "node",
-      "args": ["/Users/you/mcp-memory-private/server.js"]
+      "args": ["/path/to/mcp-memory-private/server.js"]
     }
   }
 }
