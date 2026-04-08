@@ -5,3 +5,7 @@ node_modules/
 .env
 .env.local
 .memory/
+
+# Local tool-description example overrides (the .example template stays tracked)
+examples.json
+review/

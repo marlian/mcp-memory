@@ -96,7 +96,7 @@ The server speaks MCP over stdio. The spawn command is:
 node /absolute/path/to/mcp-memory/server.js
 ```
 
-No arguments required. Configuration is via environment variables (see below).
+No arguments required. Configuration is optional and uses environment variables — see [Environment variables](#environment-variables) for the full list and the three ways to set them.
 
 ## How project-scoped memory works
 
@@ -160,7 +160,13 @@ Project memory decays slower than global memory by default, because project know
 
 ## Running multiple instances
 
-You can run separate server instances for different purposes. A common pattern is one for general knowledge and one for private/personal notes:
+You can run separate server instances for different purposes. A common pattern is one for general knowledge and one for private/personal notes. The client sees them as separate tool namespaces (`memory__remember` vs `private_memory__remember`), which helps the model keep the two stores cleanly separated.
+
+There are two ways to do it. Pick the one that matches your workflow.
+
+### Pattern A — one clone, differentiated in the client config
+
+Use the client's MCP `env` block to override variables per instance. Same `server.js` spawned twice, two different databases:
 
 ```json
 {
@@ -181,7 +187,44 @@ You can run separate server instances for different purposes. A common pattern i
 }
 ```
 
-Each instance maintains its own database. The client sees them as separate tool namespaces (`memory__remember` vs `private_memory__remember`).
+Simple, single codebase, all configuration in one place. **This is the default pattern** and works with every MCP client that supports an `env` block.
+
+### Pattern B — two clones, each with its own `.env`
+
+Useful when your client's MCP schema rejects `env` blocks (Kilo is one such client today), or when you simply want each instance to be fully self-contained. Clone the repo twice and put a local `.env` file next to each `server.js`:
+
+```
+~/mcp-memory-general/
+  server.js
+  .env                       # MEMORY_HALF_LIFE_WEEKS=12
+  memory.db                  # created on first use
+
+~/mcp-memory-private/
+  server.js
+  .env                       # MEMORY_HALF_LIFE_WEEKS=26
+  memory.db                  # created on first use
+```
+
+Client config becomes trivial:
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "node",
+      "args": ["/Users/you/mcp-memory-general/server.js"]
+    },
+    "private_memory": {
+      "command": "node",
+      "args": ["/Users/you/mcp-memory-private/server.js"]
+    }
+  }
+}
+```
+
+Each clone is a self-contained deployment. `git pull` in either clone to update the code; the `.env` and `memory.db` stay local. This pattern also plays well with tool description customization (see [below](#customizing-tool-description-examples)).
+
+**Note:** `.env` files are gitignored by default so your local configuration never ends up in a commit.
 
 ## Recommended LLM instructions
 
@@ -286,6 +329,72 @@ Decay is computed at **read time** — no background jobs, no cron. The database
 | `MEMORY_DB_PATH` | `./memory.db` | Path to the global SQLite database |
 | `MEMORY_HALF_LIFE_WEEKS` | `12` | Decay half-life for global memory (weeks) |
 | `PROJECT_MEMORY_HALF_LIFE_WEEKS` | `52` | Decay half-life for project-scoped memory (weeks) |
+
+### How to set them
+
+There are three ways to set these variables. The server reads them with this precedence, **highest to lowest**:
+
+1. **Client MCP config `env` block** — values set by the client when spawning the server (see [Pattern A](#pattern-a--one-clone-differentiated-in-the-client-config) above).
+2. **Shell environment** — variables exported in the parent process that spawns the client.
+3. **`.env` file** — optional file located next to `server.js`, loaded automatically at startup. Any variable already set via method 1 or 2 is preserved; `.env` only fills in values not set elsewhere.
+4. **Hardcoded defaults** — if none of the above provides a value, the defaults in the table above apply.
+
+This precedence means you can use a `.env` file for deployment-level defaults and still override individual values from the client when needed.
+
+### The `.env` file
+
+Copy the template and edit:
+
+```bash
+cp .env.example .env
+```
+
+Supported syntax:
+
+```bash
+# Comments on their own line
+KEY=value                           # simple assignment
+KEY="value with spaces"             # double quotes
+KEY='value with spaces'             # single quotes
+KEY=value # trailing comment        # inline comment (unquoted values)
+KEY="value # literal hash"          # hash is literal inside quotes
+export KEY=value                    # bash export prefix is allowed
+KEY=                                # empty string (POSIX: var exists)
+```
+
+Not supported (by design — use the client config or shell for these):
+
+- Variable interpolation (`${OTHER_VAR}`)
+- Multi-line values
+- Escape sequences inside quotes
+
+The parser is intentionally minimal. If you need advanced features, set the variable through your shell or client config — both take precedence over `.env`.
+
+## Customizing tool description examples
+
+Tool descriptions shown to the model include example values to guide its usage (e.g. `entity: "Alice", "ProjectX", "React"`). The defaults are intentionally generic.
+
+If your deployment has a specific domain — a team's jargon, a personal knowledge base, a project with its own vocabulary — you can override these examples by creating an `examples.json` file next to `server.js`:
+
+```bash
+cp examples.json.example examples.json
+```
+
+Then edit the arrays. Any key you omit falls back to the default:
+
+```json
+{
+  "entities": ["your", "example", "entities"],
+  "entity_types": ["your", "types"],
+  "relations": ["your_verbs", "here"],
+  "event_labels": ["Your event labels"],
+  "event_types": ["your", "event", "types"]
+}
+```
+
+The file is loaded once at startup. Restart the server to apply changes. `examples.json` is gitignored so each clone can have its own customization without polluting the repo.
+
+**Why this matters:** models pay attention to examples in tool descriptions. Tailoring them to actual usage in your deployment often produces noticeably better tool-use decisions than generic placeholders.
 
 ## Database
 
