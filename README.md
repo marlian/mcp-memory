@@ -1,5 +1,9 @@
 # mcp-memory
 
+[![CI](https://github.com/marlian/mcp-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/marlian/mcp-memory/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/marlian/mcp-memory)](https://github.com/marlian/mcp-memory/releases/latest)
+[![License](https://img.shields.io/github/license/marlian/mcp-memory)](LICENSE)
+
 Persistent memory for LLMs via [Model Context Protocol](https://modelcontextprotocol.io). A local SQLite knowledge graph that gives any MCP-compatible AI client long-term memory across sessions.
 
 **Zero infrastructure.** No external database, no API keys, no server to manage. Just a single Node.js process that stores everything locally in SQLite.
@@ -21,6 +25,14 @@ git clone https://github.com/marlian/mcp-memory.git
 cd mcp-memory
 npm install
 ```
+
+Want to pin to a stable version instead of tracking `main`?
+
+```bash
+git clone --branch v0.4.0 https://github.com/marlian/mcp-memory.git
+```
+
+See [releases](https://github.com/marlian/mcp-memory/releases) for version history.
 
 Then add it to your AI client's MCP configuration (see below).
 
@@ -410,4 +422,4 @@ No migrations needed — the server handles schema creation and upgrades automat
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for the full text.
