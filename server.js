@@ -854,18 +854,30 @@ function handleTool(defaultDb, name, args) {
 
     case 'forget': {
       if (args.observation_id) {
-        // Delete FTS entry first
-        db.prepare('DELETE FROM memory_fts WHERE rowid = ?').run(args.observation_id);
+        // Fetch content before deleting so we can remove it from the contentless FTS index
+        const obs = db.prepare(
+          'SELECT o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.id = ?'
+        ).get(args.observation_id);
+        if (obs) {
+          // Contentless FTS5 tables don't support DELETE; use the special delete command instead
+          db.prepare(
+            'INSERT INTO memory_fts(memory_fts, rowid, entity_name, observation_content, entity_type) VALUES(\'delete\', ?, ?, ?, ?)'
+          ).run(args.observation_id, obs.entity_name, obs.content, obs.entity_type || '');
+        }
         const info = db.prepare('DELETE FROM observations WHERE id = ?').run(args.observation_id);
         return { deleted: info.changes > 0, type: 'observation', id: args.observation_id };
       }
       if (args.entity) {
         const entity = db.prepare('SELECT id FROM entities WHERE name = ?').get(args.entity);
         if (!entity) return { deleted: false, message: `Entity "${args.entity}" not found` };
-        // Delete FTS entries for all observations of this entity
-        const obsIds = db.prepare('SELECT id FROM observations WHERE entity_id = ?').all(entity.id);
-        for (const o of obsIds) {
-          db.prepare('DELETE FROM memory_fts WHERE rowid = ?').run(o.id);
+        // Fetch observations with content before deleting, to clean up the contentless FTS index
+        const observations = db.prepare(
+          'SELECT o.id, o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.entity_id = ?'
+        ).all(entity.id);
+        for (const o of observations) {
+          db.prepare(
+            'INSERT INTO memory_fts(memory_fts, rowid, entity_name, observation_content, entity_type) VALUES(\'delete\', ?, ?, ?, ?)'
+          ).run(o.id, o.entity_name, o.content, o.entity_type || '');
         }
         db.prepare('DELETE FROM entities WHERE id = ?').run(entity.id);
         return { deleted: true, type: 'entity', name: args.entity };
@@ -961,6 +973,22 @@ async function main() {
       addObservation(testDb, eid, 'test observation', 'user', 1.0);
       const results = searchMemory(testDb, 'test', 5, 12);
       if (!results.length) throw new Error('recall returned no results');
+
+      // Test forget by observation_id — must not throw on contentless FTS5 table
+      const obsIdToForget = addObservation(testDb, eid, 'observation to forget', 'user', 1.0);
+      const forgetObsResult = handleTool(testDb, 'forget', { observation_id: obsIdToForget });
+      if (!forgetObsResult.deleted) throw new Error('forget by observation_id did not delete the observation');
+      const stillExists = testDb.prepare('SELECT id FROM observations WHERE id = ?').get(obsIdToForget);
+      if (stillExists) throw new Error('forget by observation_id: observation still in DB after delete');
+
+      // Test forget by entity — must not throw on contentless FTS5 table
+      const eidToForget = upsertEntity(testDb, 'EntityToForget', 'test');
+      addObservation(testDb, eidToForget, 'entity observation 1', 'user', 1.0);
+      addObservation(testDb, eidToForget, 'entity observation 2', 'user', 1.0);
+      const forgetEntityResult = handleTool(testDb, 'forget', { entity: 'EntityToForget' });
+      if (!forgetEntityResult.deleted) throw new Error('forget by entity did not delete the entity');
+      const entityStillExists = testDb.prepare('SELECT id FROM entities WHERE name = ?').get('EntityToForget');
+      if (entityStillExists) throw new Error('forget by entity: entity still in DB after delete');
 
       // Test relations
       const eid2 = upsertEntity(testDb, 'OtherEntity', 'test');
