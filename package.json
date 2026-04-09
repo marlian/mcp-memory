@@ -1,5 +1,5 @@
 {
-  "name": "mcp-memory",
+  "name": "@marlian/mcp-memory",
   "version": "0.4.0",
   "description": "Persistent memory for LLMs via MCP — local SQLite knowledge graph with entities, relations, and cognitive decay",
   "main": "server.js",
