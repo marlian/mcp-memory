@@ -853,33 +853,39 @@ function handleTool(defaultDb, name, args) {
     }
 
     case 'forget': {
+      // Prepared once and shared across both paths
+      const ftsDelete = db.prepare(
+        'INSERT INTO memory_fts(memory_fts, rowid, entity_name, observation_content, entity_type) VALUES(\'delete\', ?, ?, ?, ?)'
+      );
+
       if (args.observation_id) {
-        // Fetch content before deleting so we can remove it from the contentless FTS index
-        const obs = db.prepare(
-          'SELECT o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.id = ?'
-        ).get(args.observation_id);
-        if (obs) {
-          // Contentless FTS5 tables don't support DELETE; use the special delete command instead
-          db.prepare(
-            'INSERT INTO memory_fts(memory_fts, rowid, entity_name, observation_content, entity_type) VALUES(\'delete\', ?, ?, ?, ?)'
-          ).run(args.observation_id, obs.entity_name, obs.content, obs.entity_type || '');
-        }
-        const info = db.prepare('DELETE FROM observations WHERE id = ?').run(args.observation_id);
-        return { deleted: info.changes > 0, type: 'observation', id: args.observation_id };
+        const result = db.transaction(() => {
+          // Fetch content before deleting so we can remove it from the contentless FTS index
+          const obs = db.prepare(
+            'SELECT o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.id = ?'
+          ).get(args.observation_id);
+          if (obs) {
+            // Contentless FTS5 tables don't support DELETE; use the special delete command instead
+            ftsDelete.run(args.observation_id, obs.entity_name, obs.content, obs.entity_type || '');
+          }
+          const info = db.prepare('DELETE FROM observations WHERE id = ?').run(args.observation_id);
+          return { deleted: info.changes > 0, type: 'observation', id: args.observation_id };
+        })();
+        return result;
       }
       if (args.entity) {
         const entity = db.prepare('SELECT id FROM entities WHERE name = ?').get(args.entity);
         if (!entity) return { deleted: false, message: `Entity "${args.entity}" not found` };
-        // Fetch observations with content before deleting, to clean up the contentless FTS index
-        const observations = db.prepare(
-          'SELECT o.id, o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.entity_id = ?'
-        ).all(entity.id);
-        for (const o of observations) {
-          db.prepare(
-            'INSERT INTO memory_fts(memory_fts, rowid, entity_name, observation_content, entity_type) VALUES(\'delete\', ?, ?, ?, ?)'
-          ).run(o.id, o.entity_name, o.content, o.entity_type || '');
-        }
-        db.prepare('DELETE FROM entities WHERE id = ?').run(entity.id);
+        db.transaction(() => {
+          // Fetch observations with content before deleting, to clean up the contentless FTS index
+          const observations = db.prepare(
+            'SELECT o.id, o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.entity_id = ?'
+          ).all(entity.id);
+          for (const o of observations) {
+            ftsDelete.run(o.id, o.entity_name, o.content, o.entity_type || '');
+          }
+          db.prepare('DELETE FROM entities WHERE id = ?').run(entity.id);
+        })();
         return { deleted: true, type: 'entity', name: args.entity };
       }
       return { deleted: false, message: 'Provide observation_id or entity name' };
