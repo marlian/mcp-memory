@@ -300,6 +300,14 @@ function initDb(dbPath) {
   } catch (_) {
     // Column already exists — fine
   }
+  // Migration: denormalize entity_type into observations so FTS5 delete can
+  // always use the exact value that was originally indexed (entity_type on the
+  // entities row may be updated later by upsertEntity, causing mismatches).
+  try {
+    db.exec('ALTER TABLE observations ADD COLUMN entity_type TEXT');
+  } catch (_) {
+    // Column already exists — fine
+  }
   try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_obs_event ON observations(event_id)');
   } catch (_) {
@@ -358,16 +366,20 @@ function addObservation(db, entityId, content, source = 'user', confidence = 1.0
   ).get(entityId, content);
   if (dupe) return dupe.id;
 
-  const info = db.prepare(
-    'INSERT INTO observations (entity_id, content, source, confidence, event_id) VALUES (?, ?, ?, ?, ?)'
-  ).run(entityId, content, source, confidence, eventId);
-
-  // Sync FTS
+  // Snapshot entity_type now so the FTS index and the observations row always
+  // hold the same value (upsertEntity can change entities.entity_type later).
   const entity = db.prepare('SELECT name, entity_type FROM entities WHERE id = ?').get(entityId);
+  const entityType = entity ? (entity.entity_type || '') : '';
+
+  const info = db.prepare(
+    'INSERT INTO observations (entity_id, content, source, confidence, event_id, entity_type) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(entityId, content, source, confidence, eventId, entityType);
+
+  // Sync FTS — use the same entity_type snapshot stored on the observation row
   if (entity) {
     db.prepare(
       'INSERT INTO memory_fts (rowid, entity_name, observation_content, entity_type) VALUES (?, ?, ?, ?)'
-    ).run(info.lastInsertRowid, entity.name, content, entity.entity_type || '');
+    ).run(info.lastInsertRowid, entity.name, content, entityType);
   }
 
   return info.lastInsertRowid;
@@ -860,9 +872,12 @@ function handleTool(defaultDb, name, args) {
 
       if (args.observation_id) {
         const result = db.transaction(() => {
-          // Fetch content before deleting so we can remove it from the contentless FTS index
+          // Fetch the observation's own entity_type snapshot (the exact value
+          // that was indexed into memory_fts at insert time) to drive the FTS5
+          // special delete.  Reading e.entity_type here would be wrong because
+          // upsertEntity can change it after the FTS entry was written.
           const obs = db.prepare(
-            'SELECT o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.id = ?'
+            'SELECT o.content, o.entity_type, e.name AS entity_name FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.id = ?'
           ).get(args.observation_id);
           if (obs) {
             // Contentless FTS5 tables don't support DELETE; use the special delete command instead
@@ -877,9 +892,10 @@ function handleTool(defaultDb, name, args) {
         const entity = db.prepare('SELECT id FROM entities WHERE name = ?').get(args.entity);
         if (!entity) return { deleted: false, message: `Entity "${args.entity}" not found` };
         db.transaction(() => {
-          // Fetch observations with content before deleting, to clean up the contentless FTS index
+          // Read entity_type from the observation row (the indexed snapshot), not
+          // from entities, to guarantee the FTS5 delete matches what was indexed.
           const observations = db.prepare(
-            'SELECT o.id, o.content, e.name AS entity_name, e.entity_type FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.entity_id = ?'
+            'SELECT o.id, o.content, o.entity_type, e.name AS entity_name FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.entity_id = ?'
           ).all(entity.id);
           for (const o of observations) {
             ftsDelete.run(o.id, o.entity_name, o.content, o.entity_type || '');
@@ -995,6 +1011,19 @@ async function main() {
       if (!forgetEntityResult.deleted) throw new Error('forget by entity did not delete the entity');
       const entityStillExists = testDb.prepare('SELECT id FROM entities WHERE name = ?').get('EntityToForget');
       if (entityStillExists) throw new Error('forget by entity: entity still in DB after delete');
+
+      // Test that forget uses the original indexed entity_type, not the current one.
+      // If entity_type changes after observation insertion the FTS delete must still
+      // use the value that was indexed (stored on observations.entity_type).
+      const eidChangedType = upsertEntity(testDb, 'TypeChangingEntity', 'original_type');
+      const obsChangedType = addObservation(testDb, eidChangedType, 'observation with original type', 'user', 1.0);
+      // Mutate entity_type after indexing — simulates upsertEntity being called later
+      upsertEntity(testDb, 'TypeChangingEntity', 'updated_type');
+      // forget must not throw (stale entity_type in entities must not be used)
+      const forgetChangedResult = handleTool(testDb, 'forget', { observation_id: obsChangedType });
+      if (!forgetChangedResult.deleted) throw new Error('forget after entity_type change did not delete the observation');
+      const obsChangedStillExists = testDb.prepare('SELECT id FROM observations WHERE id = ?').get(obsChangedType);
+      if (obsChangedStillExists) throw new Error('forget after entity_type change: observation still in DB');
 
       // Test relations
       const eid2 = upsertEntity(testDb, 'OtherEntity', 'test');
