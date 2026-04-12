@@ -216,22 +216,27 @@ describe('loadDotEnv', () => {
 
   it('should load new vars, preserve existing, strip comments', () => {
     const tmpEnvPath = path.join(tmpDir, 'test.env');
-    fs.writeFileSync(tmpEnvPath,
-      'MCP_MEMORY_TEST_NEW=new_value\n' +
-      'MCP_MEMORY_TEST_EXISTING=from_file\n' +
-      '# a comment line\n' +
-      'MCP_MEMORY_TEST_COMMENTED=actual_value # trailing\n'
-    );
-    process.env.MCP_MEMORY_TEST_EXISTING = 'from_process';
-    loadDotEnv(tmpEnvPath);
+    const keys = ['MCP_MEMORY_TEST_NEW', 'MCP_MEMORY_TEST_EXISTING', 'MCP_MEMORY_TEST_COMMENTED'];
+    const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]));
+    try {
+      fs.writeFileSync(tmpEnvPath,
+        'MCP_MEMORY_TEST_NEW=new_value\n' +
+        'MCP_MEMORY_TEST_EXISTING=from_file\n' +
+        '# a comment line\n' +
+        'MCP_MEMORY_TEST_COMMENTED=actual_value # trailing\n'
+      );
+      process.env.MCP_MEMORY_TEST_EXISTING = 'from_process';
+      loadDotEnv(tmpEnvPath);
 
-    assert.equal(process.env.MCP_MEMORY_TEST_NEW, 'new_value');
-    assert.equal(process.env.MCP_MEMORY_TEST_EXISTING, 'from_process', 'overwrote existing value');
-    assert.equal(process.env.MCP_MEMORY_TEST_COMMENTED, 'actual_value');
-
-    delete process.env.MCP_MEMORY_TEST_NEW;
-    delete process.env.MCP_MEMORY_TEST_EXISTING;
-    delete process.env.MCP_MEMORY_TEST_COMMENTED;
+      assert.equal(process.env.MCP_MEMORY_TEST_NEW, 'new_value');
+      assert.equal(process.env.MCP_MEMORY_TEST_EXISTING, 'from_process', 'overwrote existing value');
+      assert.equal(process.env.MCP_MEMORY_TEST_COMMENTED, 'actual_value');
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
   });
 });
 
@@ -277,15 +282,15 @@ describe('parseDotEnv', () => {
 // resolveProjectPath
 // ---------------------------------------------------------------------------
 describe('resolveProjectPath', () => {
-  const FAKE_HOME = '/fake-home/testuser';
+  const FAKE_HOME = path.join(path.sep, 'fake-home', 'testuser');
   const cases = [
-    { input: '/abs/path',       expected: '/abs/path',                       note: 'absolute path unchanged' },
-    { input: '/abs/other/repo', expected: '/abs/other/repo',                 note: 'another absolute' },
-    { input: '~/repo',          expected: '/fake-home/testuser/repo',        note: 'tilde-slash expanded' },
-    { input: '~/nested/path',   expected: '/fake-home/testuser/nested/path', note: 'tilde-slash deep' },
-    { input: '~',               expected: '/fake-home/testuser',             note: 'bare tilde' },
-    { input: 'repo',            expected: '/fake-home/testuser/repo',        note: 'relative treated as home-relative' },
-    { input: 'nested/repo',     expected: '/fake-home/testuser/nested/repo', note: 'relative nested' },
+    { input: path.join(path.sep, 'abs', 'path'),        expected: path.join(path.sep, 'abs', 'path'),              note: 'absolute path unchanged' },
+    { input: path.join(path.sep, 'abs', 'other', 'repo'), expected: path.join(path.sep, 'abs', 'other', 'repo'),  note: 'another absolute' },
+    { input: '~/repo',                                   expected: path.join(FAKE_HOME, 'repo'),                   note: 'tilde-slash expanded' },
+    { input: '~/nested/path',                            expected: path.join(FAKE_HOME, 'nested', 'path'),         note: 'tilde-slash deep' },
+    { input: '~',                                        expected: FAKE_HOME,                                      note: 'bare tilde' },
+    { input: 'repo',                                     expected: path.join(FAKE_HOME, 'repo'),                   note: 'relative treated as home-relative' },
+    { input: 'nested/repo',                              expected: path.join(FAKE_HOME, 'nested', 'repo'),         note: 'relative nested' },
   ];
 
   for (const tc of cases) {
