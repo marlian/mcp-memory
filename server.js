@@ -528,6 +528,10 @@ function compositeScore(candidate, memoryScore, totalFtsResults) {
 // searchMemory — multi-channel candidate collection with composite ranking
 // ---------------------------------------------------------------------------
 function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
+  // Sanitize limit to a safe positive integer, capped to avoid oversized IN() lists.
+  // SQLite treats negative LIMIT as "no limit"; absurd values blow up placeholders.
+  limit = Math.max(1, Math.min(Math.floor(limit) || 20, 200));
+
   const candidates = new Map();
 
   function addCandidate(id, channel, ftsPosition) {
