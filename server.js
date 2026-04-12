@@ -481,37 +481,106 @@ function getFullEvent(db, eventId, halfLifeWeeks = null) {
 // ---------------------------------------------------------------------------
 // Search (enhanced with event info)
 // ---------------------------------------------------------------------------
-function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
-  // Strategy: FTS (OR terms) first, then entity name + content LIKE, deduplicate
-  const obsIds = [];
+// ---------------------------------------------------------------------------
+// Composite scoring — channel weights and helpers
+// ---------------------------------------------------------------------------
+const CHANNEL_WEIGHTS = {
+  fts: 1.0,              // FTS match (best relevance signal)
+  entity_exact: 0.9,     // query = entity name (case insensitive)
+  entity_like: 0.7,      // query is substring of entity name
+  content_like: 0.5,     // keyword found in observation content
+  event_label: 0.4,      // matched via event label
+};
 
-  // 1. FTS5 — split query into words, OR them for broader matching
+function ftsPositionScore(position, totalFtsResults) {
+  if (totalFtsResults <= 1) return 1.0;
+  return 1.0 - (position / (totalFtsResults - 1));  // 1.0 = best, 0.0 = worst
+}
+
+function compositeScore(obs, candidate, halfLifeWeeks, totalFtsResults) {
+  const memoryScore = decayedConfidence(obs, halfLifeWeeks);
+
+  // Base relevance from best channel
+  let relevance = candidate.best_channel_weight;
+
+  // FTS position bonus — top FTS hit gets +0.08, last gets +0.00
+  if (candidate.fts_position != null && totalFtsResults > 0) {
+    relevance += ftsPositionScore(candidate.fts_position, totalFtsResults) * 0.08;
+  }
+
+  // Multi-channel bonus: +0.03 per extra channel, capped at +0.10
+  const channelBonus = Math.min(0.10, (candidate.channels.size - 1) * 0.03);
+  relevance = Math.min(1.0, relevance + channelBonus);
+
+  // Composite — relevance dominates, memory modulates
+  return relevance * 0.7 + memoryScore * 0.3;
+}
+
+// ---------------------------------------------------------------------------
+// searchMemory — multi-channel candidate collection with composite ranking
+// ---------------------------------------------------------------------------
+function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
+  const candidates = new Map();
+
+  function addCandidate(id, channel, ftsPosition) {
+    const existing = candidates.get(id);
+    if (!existing) {
+      candidates.set(id, {
+        id,
+        channels: new Set([channel]),
+        best_channel: channel,
+        best_channel_weight: CHANNEL_WEIGHTS[channel] ?? 0.5,
+        fts_position: ftsPosition != null ? ftsPosition : null,
+      });
+      return;
+    }
+    existing.channels.add(channel);
+    const w = CHANNEL_WEIGHTS[channel] ?? 0.5;
+    if (w > existing.best_channel_weight) {
+      existing.best_channel = channel;
+      existing.best_channel_weight = w;
+    }
+    // Keep the best (lowest) FTS position
+    if (ftsPosition != null && (existing.fts_position == null || ftsPosition < existing.fts_position)) {
+      existing.fts_position = ftsPosition;
+    }
+  }
+
+  const terms = query.trim().split(/\s+/).filter(Boolean);
+
+  // 1. FTS5 — ORDER BY rank gives best-to-worst; track position index
   try {
-    const terms = query.trim().split(/\s+/).filter(Boolean);
     const ftsQuery = terms.map(t => `"${t.replace(/"/g, '')}"`).join(' OR ');
     const ftsResults = db.prepare(`
       SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?
     `).all(ftsQuery, limit);
-    for (const r of ftsResults) obsIds.push(r.rowid);
+    for (let i = 0; i < ftsResults.length; i++) {
+      addCandidate(ftsResults[i].rowid, 'fts', i);
+    }
   } catch (_) {
     // FTS can fail on odd queries — fall through to LIKE
   }
 
-  // 2. Entity name match
-  const entityMatches = db.prepare(`
+  // 2. Entity exact match — e.name = query (case insensitive)
+  const exactMatches = db.prepare(`
     SELECT o.id FROM observations o
     JOIN entities e ON o.entity_id = e.id
-    WHERE e.name LIKE ? OR e.name LIKE ?
+    WHERE e.name = ? COLLATE NOCASE
+    LIMIT ?
+  `).all(query, limit);
+  for (const r of exactMatches) addCandidate(r.id, 'entity_exact');
+
+  // 3. Entity LIKE — query is substring (excluding exact hits)
+  const likeMatches = db.prepare(`
+    SELECT o.id FROM observations o
+    JOIN entities e ON o.entity_id = e.id
+    WHERE e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
     LIMIT ?
   `).all(`%${query}%`, query, limit);
+  for (const r of likeMatches) addCandidate(r.id, 'entity_like');
 
-  for (const em of entityMatches) {
-    if (!obsIds.includes(em.id)) obsIds.push(em.id);
-  }
-
-  // 3. Content LIKE fallback — catches natural language queries FTS misses
-  if (obsIds.length < limit) {
-    const terms = query.trim().split(/\s+/).filter(Boolean);
+  // 4. Content LIKE fallback — catches natural language queries FTS misses
+  if (candidates.size < limit) {
     for (const term of terms) {
       const likeResults = db.prepare(`
         SELECT o.id FROM observations o
@@ -519,28 +588,26 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
         WHERE o.content LIKE ? OR e.entity_type LIKE ?
         LIMIT ?
       `).all(`%${term}%`, `%${term}%`, limit);
-      for (const r of likeResults) {
-        if (!obsIds.includes(r.id)) obsIds.push(r.id);
-      }
+      for (const r of likeResults) addCandidate(r.id, 'content_like');
     }
   }
 
-  // 4. Event label match — also find observations via their event
-  if (obsIds.length < limit) {
+  // 5. Event label match — find observations via their event
+  if (candidates.size < limit) {
     const eventMatches = db.prepare(`
       SELECT o.id FROM observations o
       JOIN events ev ON o.event_id = ev.id
       WHERE ev.label LIKE ?
       LIMIT ?
     `).all(`%${query}%`, limit);
-    for (const r of eventMatches) {
-      if (!obsIds.includes(r.id)) obsIds.push(r.id);
-    }
+    for (const r of eventMatches) addCandidate(r.id, 'event_label');
   }
 
-  if (!obsIds.length) return [];
+  if (candidates.size === 0) return [];
 
-  const placeholders = obsIds.map(() => '?').join(',');
+  // Hydrate — candidate metadata is joined back by id after hydration
+  const ids = [...candidates.keys()];
+  const placeholders = ids.map(() => '?').join(',');
   const observations = db.prepare(`
     SELECT o.*, e.name AS entity_name, e.entity_type,
            ev.id AS event_id, ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
@@ -548,18 +615,25 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
     JOIN entities e ON o.entity_id = e.id
     LEFT JOIN events ev ON o.event_id = ev.id
     WHERE o.id IN (${placeholders})
-  `).all(...obsIds);
+  `).all(...ids);
 
   // Touch accessed observations
-  touchObservations(db, obsIds);
+  touchObservations(db, ids);
 
-  // Apply decay, sort by effective confidence
+  // Score, sort, enforce limit
+  const totalFtsResults = [...candidates.values()].filter(c => c.fts_position != null).length;
+
   return observations
-    .map(obs => ({
-      ...obs,
-      effective_confidence: decayedConfidence(obs, halfLifeWeeks),
-    }))
-    .sort((a, b) => b.effective_confidence - a.effective_confidence);
+    .map(obs => {
+      const candidate = candidates.get(obs.id);
+      return {
+        ...obs,
+        effective_confidence: decayedConfidence(obs, halfLifeWeeks),
+        composite_score: compositeScore(obs, candidate, halfLifeWeeks, totalFtsResults),
+      };
+    })
+    .sort((a, b) => b.composite_score - a.composite_score)
+    .slice(0, limit);
 }
 
 function getEntityGraph(db, entityName, halfLifeWeeks = null) {
@@ -817,6 +891,7 @@ function handleTool(defaultDb, name, args) {
           id: r.id,
           content: r.content,
           confidence: r.effective_confidence,
+          composite_score: r.composite_score,
           source: r.source,
           access_count: r.access_count,
           created_at: r.created_at,
@@ -1104,6 +1179,9 @@ module.exports = {
   createEvent,
   getFullEvent,
   decayedConfidence,
+  compositeScore,
+  ftsPositionScore,
+  CHANNEL_WEIGHTS,
   getDb,
   exFmt,
   parseDotEnv,

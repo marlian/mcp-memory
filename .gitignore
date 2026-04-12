@@ -9,3 +9,4 @@ node_modules/
 # Local tool-description example overrides (the .example template stays tracked)
 examples.json
 review/
+docs/internal/
