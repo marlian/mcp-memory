@@ -15,6 +15,9 @@ const {
   createEvent,
   getFullEvent,
   decayedConfidence,
+  compositeScore,
+  ftsPositionScore,
+  CHANNEL_WEIGHTS,
   getDb,
   exFmt,
   parseDotEnv,
@@ -157,6 +160,213 @@ describe('project DB isolation', () => {
     const globalSearch = searchMemory(testDb, 'ProjectOnly', 5, 12);
     const leaked = globalSearch.some(r => r.entity_name === 'ProjectOnly');
     assert.ok(!leaked, 'project entity leaked to global DB');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composite ranking (v5 redesign)
+// ---------------------------------------------------------------------------
+describe('composite ranking', () => {
+  let rankDb;
+
+  before(() => {
+    rankDb = initDb(path.join(tmpDir, 'rank-test.db'));
+
+    // Seed data designed for ranking tests:
+    // Entity "Alice" with observations about therapy (should FTS-match "Alice terapia")
+    const alice = upsertEntity(rankDb, 'Alice', 'person');
+    addObservation(rankDb, alice, 'Alice is the therapist, weekly terapia sessions', 'user', 1.0);
+    addObservation(rankDb, alice, 'Alice prefers cognitive behavioral approach', 'user', 0.9);
+
+    // Entity "AliceSprings" — should match entity_like for "Alice" but NOT entity_exact
+    const aliceSprings = upsertEntity(rankDb, 'AliceSprings', 'location');
+    addObservation(rankDb, aliceSprings, 'A city in Australia, hot climate', 'user', 1.0);
+
+    // Entity "Bob" with observation mentioning "Alice" in content only
+    const bob = upsertEntity(rankDb, 'Bob', 'person');
+    addObservation(rankDb, bob, 'Bob once mentioned Alice in passing', 'user', 1.0);
+
+    // Entity "Cooking" — high confidence, irrelevant to Alice
+    const cooking = upsertEntity(rankDb, 'Cooking', 'hobby');
+    addObservation(rankDb, cooking, 'Cooking pasta is a daily ritual', 'user', 1.0);
+
+    // Event with label mentioning Alice
+    const evId = createEvent(rankDb, 'Session with Alice - intake', null, 'session', null, null);
+    const therapy = upsertEntity(rankDb, 'TherapyLog', 'log');
+    addObservation(rankDb, therapy, 'First session notes', 'user', 0.8, evId);
+  });
+
+  after(() => {
+    rankDb.close();
+  });
+
+  it('should return composite_score on all results', () => {
+    const results = searchMemory(rankDb, 'Alice', 10, 12);
+    assert.ok(results.length > 0, 'no results');
+    for (const r of results) {
+      assert.equal(typeof r.composite_score, 'number', `missing composite_score on obs ${r.id}`);
+      assert.equal(typeof r.effective_confidence, 'number', `missing effective_confidence on obs ${r.id}`);
+      assert.ok(r.composite_score > 0, `composite_score should be positive, got ${r.composite_score}`);
+    }
+  });
+
+  it('better FTS match (more terms) should rank above weaker FTS match', () => {
+    // "Alice terapia" — Alice's obs contains both terms, Bob's obs contains only "Alice"
+    // Both match FTS, but Alice's obs should have a better FTS position (more relevant)
+    const results = searchMemory(rankDb, 'Alice terapia', 10, 12);
+    const aliceObs = results.find(r => r.entity_name === 'Alice' && r.content.includes('terapia'));
+    const bobObs = results.find(r => r.entity_name === 'Bob');
+    // Assert both exist before comparing — conditional checks hide regressions
+    assert.ok(aliceObs, 'Alice terapia observation not found in results');
+    assert.ok(bobObs, 'Bob observation not found in results');
+    assert.ok(
+      aliceObs.composite_score >= bobObs.composite_score,
+      `better FTS match (${aliceObs.composite_score}) should rank >= weaker match (${bobObs.composite_score})`
+    );
+    assert.ok(results[0].content.includes('terapia'), 'best result should contain both query terms');
+  });
+
+  it('entity_exact should rank above entity_like', () => {
+    const results = searchMemory(rankDb, 'Alice', 10, 12);
+    const exactObs = results.filter(r => r.entity_name === 'Alice');
+    const likeObs = results.filter(r => r.entity_name === 'AliceSprings');
+    assert.ok(exactObs.length > 0, 'no entity_exact results for Alice');
+    assert.ok(likeObs.length > 0, 'no entity_like results for AliceSprings');
+    const bestExact = Math.max(...exactObs.map(r => r.composite_score));
+    const bestLike = Math.max(...likeObs.map(r => r.composite_score));
+    assert.ok(
+      bestExact > bestLike,
+      `entity_exact best (${bestExact}) should outrank entity_like best (${bestLike})`
+    );
+  });
+
+  it('irrelevant high-confidence fact should NOT outrank relevant lower-confidence fact', () => {
+    // "Alice" query — Cooking (high conf, irrelevant) should not appear above Alice obs
+    const results = searchMemory(rankDb, 'Alice', 10, 12);
+    const cookingObs = results.find(r => r.entity_name === 'Cooking');
+    const aliceObs = results.find(r => r.entity_name === 'Alice');
+    if (cookingObs && aliceObs) {
+      assert.ok(
+        aliceObs.composite_score > cookingObs.composite_score,
+        'irrelevant high-confidence fact outranked relevant fact — ranking regression'
+      );
+    }
+    // Cooking shouldn't even appear for "Alice" query
+    assert.equal(cookingObs, undefined, 'Cooking should not match Alice query at all');
+  });
+
+  it('should enforce limit after scoring', () => {
+    const results = searchMemory(rankDb, 'Alice', 2, 12);
+    assert.ok(results.length <= 2, `returned ${results.length} results, expected <= 2`);
+  });
+
+  it('order independence — shuffled candidate IDs produce identical ranking', () => {
+    // Run search twice — results should be deterministic regardless of internal order
+    const r1 = searchMemory(rankDb, 'Alice', 10, 12);
+    const r2 = searchMemory(rankDb, 'Alice', 10, 12);
+    assert.deepStrictEqual(
+      r1.map(r => r.id),
+      r2.map(r => r.id),
+      'non-deterministic ranking'
+    );
+  });
+
+  it('FTS position should differentiate intra-FTS results (no clamp to 1.0)', () => {
+    // Best FTS hit should have higher composite_score than worst FTS hit
+    const results = searchMemory(rankDb, 'Alice terapia', 10, 12);
+    const ftsResults = results.filter(r =>
+      r.content.includes('Alice') || r.content.includes('terapia')
+    );
+    if (ftsResults.length >= 2) {
+      // First and last FTS results should NOT have identical scores
+      assert.notEqual(
+        ftsResults[0].composite_score,
+        ftsResults[ftsResults.length - 1].composite_score,
+        'FTS position bonus was clamped — all FTS results have identical score'
+      );
+    }
+  });
+
+  it('global top-k: searchMemory(q, 2) should match searchMemory(q, 10).slice(0, 2)', () => {
+    // The collection multiplier ensures per-channel queries don't prematurely
+    // truncate candidates before global scoring
+    const narrow = searchMemory(rankDb, 'Alice', 2, 12);
+    const wide = searchMemory(rankDb, 'Alice', 10, 12).slice(0, 2);
+    assert.deepStrictEqual(
+      narrow.map(r => r.id),
+      wide.map(r => r.id),
+      'narrow limit missed candidates that global scoring would have selected'
+    );
+  });
+
+  it('touchObservations should only bump returned results, not all candidates', () => {
+    // Create a fresh DB so access_count is pristine
+    const touchDb = initDb(path.join(tmpDir, 'touch-test.db'));
+    const e1 = upsertEntity(touchDb, 'TouchTarget', 'test');
+    const obs1 = addObservation(touchDb, e1, 'touch observation alpha', 'user', 1.0);
+    const obs2 = addObservation(touchDb, e1, 'touch observation beta', 'user', 0.5);
+    const obs3 = addObservation(touchDb, e1, 'touch observation gamma', 'user', 0.3);
+
+    // Request limit=1 — only top result should get access_count bumped
+    searchMemory(touchDb, 'touch observation', 1, 12);
+
+    const counts = [obs1, obs2, obs3].map(id =>
+      touchDb.prepare('SELECT access_count FROM observations WHERE id = ?').get(id).access_count
+    );
+    const bumped = counts.filter(c => c > 0).length;
+    assert.equal(bumped, 1, `expected 1 observation touched, got ${bumped} (counts: ${counts})`);
+    touchDb.close();
+  });
+
+  it('deterministic tie-break: identical scores produce stable ordering', () => {
+    const r1 = searchMemory(rankDb, 'Alice', 10, 12);
+    const r2 = searchMemory(rankDb, 'Alice', 10, 12);
+    const r3 = searchMemory(rankDb, 'Alice', 10, 12);
+    assert.deepStrictEqual(r1.map(r => r.id), r2.map(r => r.id), 'run 1 vs 2');
+    assert.deepStrictEqual(r2.map(r => r.id), r3.map(r => r.id), 'run 2 vs 3');
+  });
+
+  it('empty/whitespace query should return no results', () => {
+    assert.deepStrictEqual(searchMemory(rankDb, '', 10, 12), []);
+    assert.deepStrictEqual(searchMemory(rankDb, '   ', 10, 12), []);
+  });
+
+  it('limit=0 should return no results', () => {
+    assert.deepStrictEqual(searchMemory(rankDb, 'Alice', 0, 12), []);
+  });
+
+  it('limit clamped to 200 max', () => {
+    const results = searchMemory(rankDb, 'Alice', 9999, 12);
+    assert.ok(results.length <= 200, `returned ${results.length}, expected <= 200`);
+  });
+
+  it('recall handler should include composite_score in output', () => {
+    const result = handleTool(rankDb, 'recall', { query: 'Alice', limit: 5 });
+    assert.ok(result.results.length > 0, 'no results from recall handler');
+    const firstObs = result.results[0].observations[0];
+    assert.equal(typeof firstObs.confidence, 'number', 'missing confidence');
+    assert.equal(typeof firstObs.composite_score, 'number', 'missing composite_score');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ftsPositionScore
+// ---------------------------------------------------------------------------
+describe('ftsPositionScore', () => {
+  it('should return 1.0 for best position (0)', () => {
+    assert.equal(ftsPositionScore(0, 5), 1.0);
+  });
+
+  it('should return 0.0 for worst position', () => {
+    assert.equal(ftsPositionScore(4, 5), 0.0);
+  });
+
+  it('should return 0.5 for middle position', () => {
+    assert.equal(ftsPositionScore(2, 5), 0.5);
+  });
+
+  it('should return 1.0 for single result', () => {
+    assert.equal(ftsPositionScore(0, 1), 1.0);
   });
 });
 
