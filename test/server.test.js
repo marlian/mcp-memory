@@ -230,14 +230,14 @@ describe('composite ranking', () => {
     const results = searchMemory(rankDb, 'Alice', 10, 12);
     const exactObs = results.filter(r => r.entity_name === 'Alice');
     const likeObs = results.filter(r => r.entity_name === 'AliceSprings');
-    if (exactObs.length > 0 && likeObs.length > 0) {
-      const bestExact = Math.max(...exactObs.map(r => r.composite_score));
-      const bestLike = Math.max(...likeObs.map(r => r.composite_score));
-      assert.ok(
-        bestExact > bestLike,
-        `entity_exact best (${bestExact}) should outrank entity_like best (${bestLike})`
-      );
-    }
+    assert.ok(exactObs.length > 0, 'no entity_exact results for Alice');
+    assert.ok(likeObs.length > 0, 'no entity_like results for AliceSprings');
+    const bestExact = Math.max(...exactObs.map(r => r.composite_score));
+    const bestLike = Math.max(...likeObs.map(r => r.composite_score));
+    assert.ok(
+      bestExact > bestLike,
+      `entity_exact best (${bestExact}) should outrank entity_like best (${bestLike})`
+    );
   });
 
   it('irrelevant high-confidence fact should NOT outrank relevant lower-confidence fact', () => {

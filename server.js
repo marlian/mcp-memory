@@ -533,6 +533,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
   function addCandidate(id, channel, ftsPosition) {
     const existing = candidates.get(id);
     if (!existing) {
+      if (candidates.size >= MAX_CANDIDATES) return;
       candidates.set(id, {
         id,
         channels: new Set([channel]),
@@ -555,6 +556,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
   }
 
   const q = query.trim();
+  if (!q) return [];
   const terms = q.split(/\s+/).filter(Boolean);
   // Collect more candidates than requested so global scoring sees a broader pool
   const collectLimit = limit * COLLECTION_MULTIPLIER;
