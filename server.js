@@ -530,7 +530,10 @@ function compositeScore(candidate, memoryScore, totalFtsResults) {
 function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
   // Sanitize limit to a safe positive integer, capped to avoid oversized IN() lists.
   // SQLite treats negative LIMIT as "no limit"; absurd values blow up placeholders.
-  limit = Math.max(1, Math.min(Math.floor(limit) || 20, 200));
+  // Explicit 0 returns empty (not default 20). NaN/undefined fall back to 20.
+  const raw = Number.isFinite(limit) ? Math.floor(limit) : 20;
+  if (raw <= 0) return [];
+  limit = Math.min(raw, 200);
 
   const candidates = new Map();
 
