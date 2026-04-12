@@ -272,6 +272,61 @@ describe('composite ranking', () => {
     );
   });
 
+  it('FTS position should differentiate intra-FTS results (no clamp to 1.0)', () => {
+    // Best FTS hit should have higher composite_score than worst FTS hit
+    const results = searchMemory(rankDb, 'Alice terapia', 10, 12);
+    const ftsResults = results.filter(r =>
+      r.content.includes('Alice') || r.content.includes('terapia')
+    );
+    if (ftsResults.length >= 2) {
+      // First and last FTS results should NOT have identical scores
+      assert.notEqual(
+        ftsResults[0].composite_score,
+        ftsResults[ftsResults.length - 1].composite_score,
+        'FTS position bonus was clamped — all FTS results have identical score'
+      );
+    }
+  });
+
+  it('global top-k: searchMemory(q, 2) should match searchMemory(q, 10).slice(0, 2)', () => {
+    // The collection multiplier ensures per-channel queries don't prematurely
+    // truncate candidates before global scoring
+    const narrow = searchMemory(rankDb, 'Alice', 2, 12);
+    const wide = searchMemory(rankDb, 'Alice', 10, 12).slice(0, 2);
+    assert.deepStrictEqual(
+      narrow.map(r => r.id),
+      wide.map(r => r.id),
+      'narrow limit missed candidates that global scoring would have selected'
+    );
+  });
+
+  it('touchObservations should only bump returned results, not all candidates', () => {
+    // Create a fresh DB so access_count is pristine
+    const touchDb = initDb(path.join(tmpDir, 'touch-test.db'));
+    const e1 = upsertEntity(touchDb, 'TouchTarget', 'test');
+    const obs1 = addObservation(touchDb, e1, 'touch observation alpha', 'user', 1.0);
+    const obs2 = addObservation(touchDb, e1, 'touch observation beta', 'user', 0.5);
+    const obs3 = addObservation(touchDb, e1, 'touch observation gamma', 'user', 0.3);
+
+    // Request limit=1 — only top result should get access_count bumped
+    searchMemory(touchDb, 'touch observation', 1, 12);
+
+    const counts = [obs1, obs2, obs3].map(id =>
+      touchDb.prepare('SELECT access_count FROM observations WHERE id = ?').get(id).access_count
+    );
+    const bumped = counts.filter(c => c > 0).length;
+    assert.equal(bumped, 1, `expected 1 observation touched, got ${bumped} (counts: ${counts})`);
+    touchDb.close();
+  });
+
+  it('deterministic tie-break: identical scores produce stable ordering', () => {
+    const r1 = searchMemory(rankDb, 'Alice', 10, 12);
+    const r2 = searchMemory(rankDb, 'Alice', 10, 12);
+    const r3 = searchMemory(rankDb, 'Alice', 10, 12);
+    assert.deepStrictEqual(r1.map(r => r.id), r2.map(r => r.id), 'run 1 vs 2');
+    assert.deepStrictEqual(r2.map(r => r.id), r3.map(r => r.id), 'run 2 vs 3');
+  });
+
   it('recall handler should include composite_score in output', () => {
     const result = handleTool(rankDb, 'recall', { query: 'Alice', limit: 5 });
     assert.ok(result.results.length > 0, 'no results from recall handler');
