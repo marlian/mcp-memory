@@ -590,7 +590,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
     SELECT o.id FROM observations o
     JOIN entities e ON o.entity_id = e.id
     WHERE e.name = ? COLLATE NOCASE
-    LIMIT ?
+    ORDER BY o.id LIMIT ?
   `).all(q, collectLimit);
   for (const r of exactMatches) addCandidate(r.id, 'entity_exact');
 
@@ -600,7 +600,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
       SELECT o.id FROM observations o
       JOIN entities e ON o.entity_id = e.id
       WHERE e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
-      LIMIT ?
+      ORDER BY o.id LIMIT ?
     `).all(`%${q}%`, q, collectLimit);
     for (const r of likeMatches) addCandidate(r.id, 'entity_like');
   }
@@ -612,7 +612,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
       const contentResults = db.prepare(`
         SELECT o.id FROM observations o
         WHERE o.content LIKE ?
-        LIMIT ?
+        ORDER BY o.id LIMIT ?
       `).all(`%${term}%`, collectLimit);
       for (const r of contentResults) addCandidate(r.id, 'content_like');
     }
@@ -626,7 +626,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
         SELECT o.id FROM observations o
         JOIN entities e ON o.entity_id = e.id
         WHERE e.entity_type LIKE ?
-        LIMIT ?
+        ORDER BY o.id LIMIT ?
       `).all(`%${term}%`, collectLimit);
       for (const r of typeResults) addCandidate(r.id, 'type_like');
     }
@@ -638,7 +638,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
       SELECT o.id FROM observations o
       JOIN events ev ON o.event_id = ev.id
       WHERE ev.label LIKE ?
-      LIMIT ?
+      ORDER BY o.id LIMIT ?
     `).all(`%${q}%`, collectLimit);
     for (const r of eventMatches) addCandidate(r.id, 'event_label');
   }
@@ -926,7 +926,7 @@ function handleTool(defaultDb, name, args) {
     }
 
     case 'recall': {
-      const results = searchMemory(db, args.query, args.limit || 20, halfLife);
+      const results = searchMemory(db, args.query, args.limit ?? 20, halfLife);
       // Group by entity for cleaner output
       const grouped = {};
       for (const r of results) {
@@ -1084,7 +1084,7 @@ function handleTool(defaultDb, name, args) {
         event_type: args.event_type,
         date_from: args.date_from,
         date_to: args.date_to,
-        limit: args.limit || 20,
+        limit: args.limit ?? 20,
       });
       return {
         events,
