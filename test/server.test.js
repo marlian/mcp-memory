@@ -216,14 +216,13 @@ describe('composite ranking', () => {
     const results = searchMemory(rankDb, 'Alice terapia', 10, 12);
     const aliceObs = results.find(r => r.entity_name === 'Alice' && r.content.includes('terapia'));
     const bobObs = results.find(r => r.entity_name === 'Bob');
-    if (aliceObs && bobObs) {
-      assert.ok(
-        aliceObs.composite_score >= bobObs.composite_score,
-        `better FTS match (${aliceObs.composite_score}) should rank >= weaker match (${bobObs.composite_score})`
-      );
-    }
-    // At minimum, Alice's terapia obs should be in top results
+    // Assert both exist before comparing — conditional checks hide regressions
     assert.ok(aliceObs, 'Alice terapia observation not found in results');
+    assert.ok(bobObs, 'Bob observation not found in results');
+    assert.ok(
+      aliceObs.composite_score >= bobObs.composite_score,
+      `better FTS match (${aliceObs.composite_score}) should rank >= weaker match (${bobObs.composite_score})`
+    );
     assert.ok(results[0].content.includes('terapia'), 'best result should contain both query terms');
   });
 

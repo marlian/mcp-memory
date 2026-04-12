@@ -554,9 +554,14 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
     }
   }
 
-  const terms = query.trim().split(/\s+/).filter(Boolean);
+  const q = query.trim();
+  const terms = q.split(/\s+/).filter(Boolean);
   // Collect more candidates than requested so global scoring sees a broader pool
   const collectLimit = limit * COLLECTION_MULTIPLIER;
+  // Hard cap on total candidates to avoid oversized IN() lists hitting SQLite
+  // parameter limits.  Each channel respects collectLimit individually, but the
+  // Map can grow beyond that when multiple channels contribute.
+  const MAX_CANDIDATES = Math.max(collectLimit, 200);
 
   // 1. FTS5 — ORDER BY rank gives best-to-worst; track position index
   try {
@@ -577,21 +582,24 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
     JOIN entities e ON o.entity_id = e.id
     WHERE e.name = ? COLLATE NOCASE
     LIMIT ?
-  `).all(query, collectLimit);
+  `).all(q, collectLimit);
   for (const r of exactMatches) addCandidate(r.id, 'entity_exact');
 
   // 3. Entity LIKE — query is substring (excluding exact hits)
-  const likeMatches = db.prepare(`
-    SELECT o.id FROM observations o
-    JOIN entities e ON o.entity_id = e.id
-    WHERE e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
-    LIMIT ?
-  `).all(`%${query}%`, query, collectLimit);
-  for (const r of likeMatches) addCandidate(r.id, 'entity_like');
+  if (candidates.size < MAX_CANDIDATES) {
+    const likeMatches = db.prepare(`
+      SELECT o.id FROM observations o
+      JOIN entities e ON o.entity_id = e.id
+      WHERE e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
+      LIMIT ?
+    `).all(`%${q}%`, q, collectLimit);
+    for (const r of likeMatches) addCandidate(r.id, 'entity_like');
+  }
 
   // 4. Content LIKE fallback — catches natural language queries FTS misses
-  if (candidates.size < collectLimit) {
+  if (candidates.size < MAX_CANDIDATES) {
     for (const term of terms) {
+      if (candidates.size >= MAX_CANDIDATES) break;
       const contentResults = db.prepare(`
         SELECT o.id FROM observations o
         WHERE o.content LIKE ?
@@ -602,8 +610,9 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
   }
 
   // 5. Entity type LIKE — separate channel from content_like
-  if (candidates.size < collectLimit) {
+  if (candidates.size < MAX_CANDIDATES) {
     for (const term of terms) {
+      if (candidates.size >= MAX_CANDIDATES) break;
       const typeResults = db.prepare(`
         SELECT o.id FROM observations o
         JOIN entities e ON o.entity_id = e.id
@@ -615,13 +624,13 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
   }
 
   // 6. Event label match — find observations via their event
-  if (candidates.size < collectLimit) {
+  if (candidates.size < MAX_CANDIDATES) {
     const eventMatches = db.prepare(`
       SELECT o.id FROM observations o
       JOIN events ev ON o.event_id = ev.id
       WHERE ev.label LIKE ?
       LIMIT ?
-    `).all(`%${query}%`, collectLimit);
+    `).all(`%${q}%`, collectLimit);
     for (const r of eventMatches) addCandidate(r.id, 'event_label');
   }
 
