@@ -18,6 +18,11 @@ const {
   compositeScore,
   ftsPositionScore,
   CHANNEL_WEIGHTS,
+  sanitizeSearchLimit,
+  collectCandidates,
+  hydrateCandidates,
+  scoreCandidates,
+  groupResults,
   getDb,
   exFmt,
   parseDotEnv,
@@ -347,6 +352,52 @@ describe('composite ranking', () => {
     assert.equal(typeof firstObs.confidence, 'number', 'missing confidence');
     assert.equal(typeof firstObs.composite_score, 'number', 'missing composite_score');
   });
+
+  it('collectCandidates should accumulate multi-channel metadata in a Map', () => {
+    const candidates = collectCandidates(rankDb, 'Alice', 30, 200);
+    const aliceObs = rankDb.prepare(`
+      SELECT o.id
+      FROM observations o
+      JOIN entities e ON o.entity_id = e.id
+      WHERE e.name = ? AND o.content LIKE ?
+      LIMIT 1
+    `).get('Alice', '%therapist%');
+
+    assert.ok(aliceObs, 'fixture lookup failed for Alice observation');
+    const candidate = candidates.get(aliceObs.id);
+    assert.ok(candidate, 'Alice observation missing from candidate map');
+    assert.ok(candidate.channels.has('fts'), 'expected FTS channel on Alice candidate');
+    assert.ok(candidate.channels.has('entity_exact'), 'expected entity_exact channel on Alice candidate');
+    assert.equal(candidate.best_channel, 'fts', 'expected strongest channel to remain fts');
+  });
+
+  it('hydrateCandidates + scoreCandidates should preserve ranking pipeline behavior', () => {
+    const limit = 3;
+    const collectLimit = limit * 3;
+    const candidates = collectCandidates(rankDb, 'Alice', collectLimit, Math.max(collectLimit, 200));
+    const hydrated = hydrateCandidates(rankDb, candidates);
+    const ranked = scoreCandidates(hydrated, candidates, 12, limit);
+
+    assert.ok(hydrated.length >= ranked.length, 'hydration should return at least ranked rows');
+    assert.ok(ranked.length <= limit, 'scored results should respect limit');
+    assert.deepStrictEqual(
+      ranked.map(r => r.id),
+      searchMemory(rankDb, 'Alice', limit, 12).map(r => r.id),
+      'extracted pipeline drifted from searchMemory behavior'
+    );
+  });
+
+  it('groupResults should preserve grouped recall response shape', () => {
+    const ranked = searchMemory(rankDb, 'Alice', 5, 12);
+    const grouped = groupResults(ranked);
+
+    assert.equal(grouped.total_facts, ranked.length);
+    assert.ok(Array.isArray(grouped.results), 'grouped results should be an array');
+    assert.ok(grouped.results.length > 0, 'grouped results should not be empty for Alice query');
+    assert.equal(typeof grouped.results[0].entity_name, 'string');
+    assert.ok(Array.isArray(grouped.results[0].observations), 'group observations should be an array');
+    assert.equal(typeof grouped.results[0].observations[0].confidence, 'number');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -367,6 +418,24 @@ describe('ftsPositionScore', () => {
 
   it('should return 1.0 for single result', () => {
     assert.equal(ftsPositionScore(0, 1), 1.0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeSearchLimit
+// ---------------------------------------------------------------------------
+describe('sanitizeSearchLimit', () => {
+  it('should default invalid input to 20', () => {
+    assert.equal(sanitizeSearchLimit(NaN), 20);
+  });
+
+  it('should return 0 for non-positive limits', () => {
+    assert.equal(sanitizeSearchLimit(0), 0);
+    assert.equal(sanitizeSearchLimit(-5), 0);
+  });
+
+  it('should clamp oversized limits to 200', () => {
+    assert.equal(sanitizeSearchLimit(9999), 200);
   });
 });
 

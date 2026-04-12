@@ -524,53 +524,45 @@ function compositeScore(candidate, memoryScore, totalFtsResults) {
   return relevance * 0.7 + memoryScore * 0.3;
 }
 
-// ---------------------------------------------------------------------------
-// searchMemory — multi-channel candidate collection with composite ranking
-// ---------------------------------------------------------------------------
-function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
+function sanitizeSearchLimit(limit) {
   // Sanitize limit to a safe positive integer, capped to avoid oversized IN() lists.
   // SQLite treats negative LIMIT as "no limit"; absurd values blow up placeholders.
   // Explicit 0 returns empty (not default 20). NaN/undefined fall back to 20.
   const raw = Number.isFinite(limit) ? Math.floor(limit) : 20;
-  if (raw <= 0) return [];
-  limit = Math.min(raw, 200);
+  if (raw <= 0) return 0;
+  return Math.min(raw, 200);
+}
 
-  const candidates = new Map();
-
-  function addCandidate(id, channel, ftsPosition) {
-    const existing = candidates.get(id);
-    if (!existing) {
-      if (candidates.size >= MAX_CANDIDATES) return;
-      candidates.set(id, {
-        id,
-        channels: new Set([channel]),
-        best_channel: channel,
-        best_channel_weight: CHANNEL_WEIGHTS[channel] ?? 0.5,
-        fts_position: ftsPosition != null ? ftsPosition : null,
-      });
-      return;
-    }
-    existing.channels.add(channel);
-    const w = CHANNEL_WEIGHTS[channel] ?? 0.5;
-    if (w > existing.best_channel_weight) {
-      existing.best_channel = channel;
-      existing.best_channel_weight = w;
-    }
-    // Keep the best (lowest) FTS position
-    if (ftsPosition != null && (existing.fts_position == null || ftsPosition < existing.fts_position)) {
-      existing.fts_position = ftsPosition;
-    }
+function addCandidate(candidateMap, id, channel, maxCandidates, ftsPosition = null) {
+  const existing = candidateMap.get(id);
+  if (!existing) {
+    if (candidateMap.size >= maxCandidates) return;
+    candidateMap.set(id, {
+      id,
+      channels: new Set([channel]),
+      best_channel: channel,
+      best_channel_weight: CHANNEL_WEIGHTS[channel] ?? 0.5,
+      fts_position: ftsPosition,
+    });
+    return;
   }
 
-  const q = query.trim();
-  if (!q) return [];
-  const terms = q.split(/\s+/).filter(Boolean);
-  // Collect more candidates than requested so global scoring sees a broader pool
-  const collectLimit = limit * COLLECTION_MULTIPLIER;
-  // Hard cap on total candidates to avoid oversized IN() lists hitting SQLite
-  // parameter limits.  Each channel respects collectLimit individually, but the
-  // Map can grow beyond that when multiple channels contribute.
-  const MAX_CANDIDATES = Math.max(collectLimit, 200);
+  existing.channels.add(channel);
+  const w = CHANNEL_WEIGHTS[channel] ?? 0.5;
+  if (w > existing.best_channel_weight) {
+    existing.best_channel = channel;
+    existing.best_channel_weight = w;
+  }
+
+  // Keep the best (lowest) FTS position
+  if (ftsPosition != null && (existing.fts_position == null || ftsPosition < existing.fts_position)) {
+    existing.fts_position = ftsPosition;
+  }
+}
+
+function collectCandidates(db, query, collectLimit, maxCandidates) {
+  const candidates = new Map();
+  const terms = query.split(/\s+/).filter(Boolean);
 
   // 1. FTS5 — ORDER BY rank gives best-to-worst; track position index
   try {
@@ -579,7 +571,7 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
       SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?
     `).all(ftsQuery, collectLimit);
     for (let i = 0; i < ftsResults.length; i++) {
-      addCandidate(ftsResults[i].rowid, 'fts', i);
+      addCandidate(candidates, ftsResults[i].rowid, 'fts', maxCandidates, i);
     }
   } catch (_) {
     // FTS can fail on odd queries — fall through to LIKE
@@ -591,64 +583,67 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
     JOIN entities e ON o.entity_id = e.id
     WHERE e.name = ? COLLATE NOCASE
     ORDER BY o.id LIMIT ?
-  `).all(q, collectLimit);
-  for (const r of exactMatches) addCandidate(r.id, 'entity_exact');
+  `).all(query, collectLimit);
+  for (const r of exactMatches) addCandidate(candidates, r.id, 'entity_exact', maxCandidates);
 
   // 3. Entity LIKE — query is substring (excluding exact hits)
-  if (candidates.size < MAX_CANDIDATES) {
+  if (candidates.size < maxCandidates) {
     const likeMatches = db.prepare(`
       SELECT o.id FROM observations o
       JOIN entities e ON o.entity_id = e.id
       WHERE e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
       ORDER BY o.id LIMIT ?
-    `).all(`%${q}%`, q, collectLimit);
-    for (const r of likeMatches) addCandidate(r.id, 'entity_like');
+    `).all(`%${query}%`, query, collectLimit);
+    for (const r of likeMatches) addCandidate(candidates, r.id, 'entity_like', maxCandidates);
   }
 
   // 4. Content LIKE fallback — catches natural language queries FTS misses
-  if (candidates.size < MAX_CANDIDATES) {
+  if (candidates.size < maxCandidates) {
     for (const term of terms) {
-      if (candidates.size >= MAX_CANDIDATES) break;
+      if (candidates.size >= maxCandidates) break;
       const contentResults = db.prepare(`
         SELECT o.id FROM observations o
         WHERE o.content LIKE ?
         ORDER BY o.id LIMIT ?
       `).all(`%${term}%`, collectLimit);
-      for (const r of contentResults) addCandidate(r.id, 'content_like');
+      for (const r of contentResults) addCandidate(candidates, r.id, 'content_like', maxCandidates);
     }
   }
 
   // 5. Entity type LIKE — separate channel from content_like
-  if (candidates.size < MAX_CANDIDATES) {
+  if (candidates.size < maxCandidates) {
     for (const term of terms) {
-      if (candidates.size >= MAX_CANDIDATES) break;
+      if (candidates.size >= maxCandidates) break;
       const typeResults = db.prepare(`
         SELECT o.id FROM observations o
         JOIN entities e ON o.entity_id = e.id
         WHERE e.entity_type LIKE ?
         ORDER BY o.id LIMIT ?
       `).all(`%${term}%`, collectLimit);
-      for (const r of typeResults) addCandidate(r.id, 'type_like');
+      for (const r of typeResults) addCandidate(candidates, r.id, 'type_like', maxCandidates);
     }
   }
 
   // 6. Event label match — find observations via their event
-  if (candidates.size < MAX_CANDIDATES) {
+  if (candidates.size < maxCandidates) {
     const eventMatches = db.prepare(`
       SELECT o.id FROM observations o
       JOIN events ev ON o.event_id = ev.id
       WHERE ev.label LIKE ?
       ORDER BY o.id LIMIT ?
-    `).all(`%${q}%`, collectLimit);
-    for (const r of eventMatches) addCandidate(r.id, 'event_label');
+    `).all(`%${query}%`, collectLimit);
+    for (const r of eventMatches) addCandidate(candidates, r.id, 'event_label', maxCandidates);
   }
 
-  if (candidates.size === 0) return [];
+  return candidates;
+}
 
-  // Hydrate — candidate metadata is joined back by id after hydration
-  const ids = [...candidates.keys()];
+function hydrateCandidates(db, candidateMap) {
+  if (candidateMap.size === 0) return [];
+
+  const ids = [...candidateMap.keys()];
   const placeholders = ids.map(() => '?').join(',');
-  const observations = db.prepare(`
+  return db.prepare(`
     SELECT o.*, e.name AS entity_name, e.entity_type,
            ev.id AS event_id, ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
     FROM observations o
@@ -656,13 +651,14 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
     LEFT JOIN events ev ON o.event_id = ev.id
     WHERE o.id IN (${placeholders})
   `).all(...ids);
+}
 
-  // Score, sort, enforce limit
-  const totalFtsResults = [...candidates.values()].filter(c => c.fts_position != null).length;
+function scoreCandidates(observations, candidateMap, halfLifeWeeks, limit) {
+  const totalFtsResults = [...candidateMap.values()].filter(c => c.fts_position != null).length;
 
-  const ranked = observations
+  return observations
     .map(obs => {
-      const candidate = candidates.get(obs.id);
+      const candidate = candidateMap.get(obs.id);
       const ec = decayedConfidence(obs, halfLifeWeeks);
       return {
         ...obs,
@@ -679,6 +675,61 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
       return a.id - b.id;
     })
     .slice(0, limit);
+}
+
+function groupResults(results) {
+  const grouped = {};
+  for (const r of results) {
+    if (!grouped[r.entity_name]) {
+      grouped[r.entity_name] = {
+        entity_name: r.entity_name,
+        entity_type: r.entity_type,
+        observations: [],
+      };
+    }
+    const obs = {
+      id: r.id,
+      content: r.content,
+      confidence: r.effective_confidence,
+      composite_score: r.composite_score,
+      source: r.source,
+      access_count: r.access_count,
+      created_at: r.created_at,
+    };
+    if (r.event_id) {
+      obs.event_id = r.event_id;
+      obs.event_label = r.event_label;
+      obs.event_date = r.event_date;
+    }
+    grouped[r.entity_name].observations.push(obs);
+  }
+
+  const response = { results: Object.values(grouped), total_facts: results.length };
+  if (results.length === 0) {
+    response.hint = 'No results found. Try list_entities to browse available entities, or use broader search terms.';
+  }
+  return response;
+}
+
+// ---------------------------------------------------------------------------
+// searchMemory — multi-channel candidate collection with composite ranking
+// ---------------------------------------------------------------------------
+function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
+  limit = sanitizeSearchLimit(limit);
+  if (limit <= 0) return [];
+  const q = query.trim();
+  if (!q) return [];
+
+  // Collect more candidates than requested so global scoring sees a broader pool
+  const collectLimit = limit * COLLECTION_MULTIPLIER;
+  // Hard cap on total candidates to avoid oversized IN() lists hitting SQLite
+  // parameter limits.  Each channel respects collectLimit individually, but the
+  // Map can grow beyond that when multiple channels contribute.
+  const maxCandidates = Math.max(collectLimit, 200);
+
+  const candidates = collectCandidates(db, q, collectLimit, maxCandidates);
+  const observations = hydrateCandidates(db, candidates);
+  const ranked = scoreCandidates(observations, candidates, halfLifeWeeks, limit);
 
   // Touch only the observations actually returned — not the broader candidate pool
   touchObservations(db, ranked.map(r => r.id));
@@ -927,38 +978,7 @@ function handleTool(defaultDb, name, args) {
 
     case 'recall': {
       const results = searchMemory(db, args.query, args.limit ?? 20, halfLife);
-      // Group by entity for cleaner output
-      const grouped = {};
-      for (const r of results) {
-        if (!grouped[r.entity_name]) {
-          grouped[r.entity_name] = {
-            entity_name: r.entity_name,
-            entity_type: r.entity_type,
-            observations: [],
-          };
-        }
-        const obs = {
-          id: r.id,
-          content: r.content,
-          confidence: r.effective_confidence,
-          composite_score: r.composite_score,
-          source: r.source,
-          access_count: r.access_count,
-          created_at: r.created_at,
-        };
-        // Include event info when present
-        if (r.event_id) {
-          obs.event_id = r.event_id;
-          obs.event_label = r.event_label;
-          obs.event_date = r.event_date;
-        }
-        grouped[r.entity_name].observations.push(obs);
-      }
-      const response = { results: Object.values(grouped), total_facts: results.length };
-      if (results.length === 0) {
-        response.hint = 'No results found. Try list_entities to browse available entities, or use broader search terms.';
-      }
-      return response;
+      return groupResults(results);
     }
 
     case 'recall_entity': {
@@ -1233,6 +1253,12 @@ module.exports = {
   ftsPositionScore,
   CHANNEL_WEIGHTS,
   COLLECTION_MULTIPLIER,
+  sanitizeSearchLimit,
+  addCandidate,
+  collectCandidates,
+  hydrateCandidates,
+  scoreCandidates,
+  groupResults,
   getDb,
   exFmt,
   parseDotEnv,
