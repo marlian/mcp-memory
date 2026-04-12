@@ -326,6 +326,20 @@ describe('composite ranking', () => {
     assert.deepStrictEqual(r2.map(r => r.id), r3.map(r => r.id), 'run 2 vs 3');
   });
 
+  it('empty/whitespace query should return no results', () => {
+    assert.deepStrictEqual(searchMemory(rankDb, '', 10, 12), []);
+    assert.deepStrictEqual(searchMemory(rankDb, '   ', 10, 12), []);
+  });
+
+  it('limit=0 should return no results', () => {
+    assert.deepStrictEqual(searchMemory(rankDb, 'Alice', 0, 12), []);
+  });
+
+  it('limit clamped to 200 max', () => {
+    const results = searchMemory(rankDb, 'Alice', 9999, 12);
+    assert.ok(results.length <= 200, `returned ${results.length}, expected <= 200`);
+  });
+
   it('recall handler should include composite_score in output', () => {
     const result = handleTool(rankDb, 'recall', { query: 'Alice', limit: 5 });
     assert.ok(result.results.length > 0, 'no results from recall handler');
