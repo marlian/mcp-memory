@@ -533,7 +533,7 @@ describe('composite ranking', () => {
 
     const result = handleTool(compactDb, 'recall', { query: 'FullTarget' });
     const obs = result.results[0].observations[0];
-    assert.equal(obs.content.length, 200, 'full content should be returned without compact flag');
+    assert.equal(obs.content.length, longContent.length, 'full content should be returned without compact flag');
     assert.ok(!obs.truncated, 'truncated flag should not be set');
     assert.ok(!result.compact, 'response should not have compact: true');
     compactDb.close();
