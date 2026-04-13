@@ -409,11 +409,13 @@ function addObservation(db, entityId, content, source = 'user', confidence = 1.0
 
 function touchObservations(db, observationIds) {
   if (!observationIds.length) return;
-  const stmt = db.prepare(
-    'UPDATE observations SET access_count = access_count + 1, last_accessed = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL'
-  );
-  for (const id of observationIds) {
-    stmt.run(id);
+  const chunkSize = 900;
+  for (let i = 0; i < observationIds.length; i += chunkSize) {
+    const chunk = observationIds.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    db.prepare(
+      `UPDATE observations SET access_count = access_count + 1, last_accessed = datetime('now') WHERE id IN (${placeholders}) AND deleted_at IS NULL`
+    ).run(...chunk);
   }
 }
 
@@ -523,7 +525,7 @@ function getObservationsByIds(db, observationIds, halfLifeWeeks = null) {
     const placeholders = chunk.map(() => '?').join(',');
     rows.push(...db.prepare(`
       SELECT o.*, e.name AS entity_name,
-             ev.id AS event_id, ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
+             ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
       FROM observations o
       JOIN entities e ON o.entity_id = e.id
       LEFT JOIN events ev ON o.event_id = ev.id
@@ -555,7 +557,7 @@ function getEventObservations(db, eventId, halfLifeWeeks = null) {
 
   const observations = db.prepare(`
     SELECT o.*, e.name AS entity_name,
-           ev.id AS event_id, ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
+           ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
     FROM observations o
     JOIN entities e ON o.entity_id = e.id
     LEFT JOIN events ev ON o.event_id = ev.id
