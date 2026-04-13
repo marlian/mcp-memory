@@ -12,8 +12,11 @@ Persistent memory for LLMs via [Model Context Protocol](https://modelcontextprot
 
 - **Knowledge graph** — entities, observations, and named relations
 - **Full-text search** — FTS5-powered recall across all stored facts
+- **Composite relevance ranking** — results are scored across multiple signals: FTS position, cognitive decay, and access frequency. Frequently recalled facts build stability and naturally outrank stale ones
 - **Cognitive decay** — facts fade over time unless recalled, mimicking human memory. Frequently accessed facts build stability and resist decay
 - **Event grouping** — bundle related observations under sessions, meetings, or decisions for coherent recall
+- **Provenance primitives** — fetch observations directly by ID or event, without running a new search
+- **Soft delete** — `forget` tombstones facts rather than destroying them. Deleted rows are excluded from retrieval but the underlying data remains recoverable
 - **Project-scoped memory** — one server, many workspaces. Each project gets its own isolated database, created lazily on first use
 - **Duplicate detection** — identical observations are silently deduplicated
 - **Direct stdio** — wire it straight into your client's JSON config. No wrapper, no proxy
@@ -258,8 +261,10 @@ You have access to a persistent memory store. Use it proactively:
 - **`recall_events`** — find events by label, type, or date range
 - **`recall_event`** — get a full event with all its grouped observations
 - **`relate`** — link two entities with a named relationship
-- **`forget`** — remove stale or incorrect facts
+- **`forget`** — tombstone stale or incorrect facts (soft delete — excluded from retrieval)
 - **`list_entities`** — browse what's in memory
+- **`get_observations`** — fetch specific observations by ID (provenance hydration)
+- **`get_event_observations`** — fetch raw observations for a known event ID
 
 ### When to remember
 
@@ -333,6 +338,8 @@ Decay is computed at **read time** — no background jobs, no cron. The database
 | `remember_event` | `label` | `event_date`, `event_type`, `context`, `expires_at`, `observations[]`, `project` | Create an event with optional observations |
 | `recall_events` | — | `query`, `event_type`, `date_from`, `date_to`, `limit`, `project` | Search events |
 | `recall_event` | `event_id` | `project` | Get full event with all observations |
+| `get_observations` | `observation_ids[]` | `project` | Fetch observations directly by ID — hydrate provenance without a new search |
+| `get_event_observations` | `event_id` | `project` | Fetch raw observations for a known event, without the full `recall_event` envelope |
 
 ## Environment variables
 
@@ -419,6 +426,10 @@ SQLite with WAL mode enabled. The schema is created automatically on first run. 
 - **memory_fts** — FTS5 virtual table for full-text search
 
 No migrations needed — the server handles schema creation and upgrades automatically.
+
+### Soft delete
+
+`forget` tombstones entities and observations (`deleted_at` timestamp) rather than destroying them. Tombstoned rows are excluded from all retrieval and listing flows. Relations are hard-deleted when an entity is forgotten. The FTS index is updated synchronously on forget so deleted facts disappear from search immediately.
 
 ## License
 
