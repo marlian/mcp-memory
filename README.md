@@ -4,20 +4,27 @@
 [![Release](https://img.shields.io/github/v/release/marlian/mcp-memory)](https://github.com/marlian/mcp-memory/releases/latest)
 [![License](https://img.shields.io/github/license/marlian/mcp-memory)](LICENSE)
 
-Persistent memory for LLMs via [Model Context Protocol](https://modelcontextprotocol.io). A local SQLite knowledge graph that gives any MCP-compatible AI client long-term memory across sessions.
+![Hero graphic showing a SQLite-backed knowledge graph connected to MCP terminal clients](./assets/hero.png)
 
-**Zero infrastructure.** No external database, no API keys, no server to manage. Just a single Node.js process that stores everything locally in SQLite.
+**The same memory, everywhere you work.**
+
+mcp-memory is a local SQLite knowledge graph with opinionated retrieval, cognitive decay, and zero infrastructure. Attach it to Claude Code, Codex, Gemini CLI, Cursor, VS Code, or any MCP-compatible client — your entities, observations, and relations are always there, identically.
+
+Switch providers tomorrow. Your memory stays.
+
+**This is deliberately not an agent, planner, or orchestration layer.** It stores facts and retrieves them intelligently. Composite ranking, cognitive decay, and multi-channel search happen in the backend — the model doesn't have to think about memory while doing actual work.
 
 ## Features
 
-- **Knowledge graph** — entities, observations, and named relations
-- **Full-text search** — FTS5-powered recall across all stored facts
-- **Composite relevance ranking** — results are scored across multiple signals: FTS position, cognitive decay, and access frequency. Frequently recalled facts build stability and naturally outrank stale ones
-- **Cognitive decay** — facts fade over time unless recalled, mimicking human memory. Frequently accessed facts build stability and resist decay
+- **Provider-agnostic** — one config entry, any MCP client. Claude, Codex, Gemini, Cursor, VS Code Copilot, Kilo, Roo Code, Cline: all see the same memory, same tools, same workflow
+- **Composite relevance ranking** — multi-channel retrieval scored across FTS position, cognitive decay, and access frequency. The backend chooses what's relevant — the model just asks
+- **Cognitive decay** — facts fade over time unless recalled. Frequently accessed facts build stability and resist decay; stale ones naturally sink
+- **Knowledge graph** — entities, observations, and named relations with full-text search across all stored facts
 - **Event grouping** — bundle related observations under sessions, meetings, or decisions for coherent recall
 - **Provenance primitives** — fetch observations directly by ID or event, without running a new search
 - **Soft delete** — `forget` tombstones facts rather than destroying them. Deleted rows are excluded from all retrieval but remain in the database (recoverable via direct SQLite access if needed)
 - **Project-scoped memory** — one server, many workspaces. Each project gets its own isolated database, created lazily on first use
+- **Zero infrastructure** — no external database, no API keys, no server to manage. A single Node.js process, a local SQLite file
 - **Duplicate detection** — identical observations are silently deduplicated
 - **Direct stdio** — wire it straight into your client's JSON config. No wrapper, no proxy
 
@@ -32,7 +39,7 @@ npm install
 Want to pin to a stable version instead of tracking `main`?
 
 ```bash
-git clone --branch v0.4.0 https://github.com/marlian/mcp-memory.git
+git clone --branch v0.5.0 https://github.com/marlian/mcp-memory.git
 ```
 
 See [releases](https://github.com/marlian/mcp-memory/releases) for version history.
