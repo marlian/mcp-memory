@@ -1056,9 +1056,9 @@ const TOOLS = [
       properties: {
         observation_ids: {
           type: 'array',
-          items: { type: 'number' },
-          maxItems: 1000,
-          description: 'Observation IDs to fetch directly',
+          items: { type: 'integer', minimum: 1 },
+          uniqueItems: true,
+          description: 'Positive integer observation IDs to fetch directly',
         },
         project: { type: 'string', description: 'Project workspace path for project-scoped memory (absolute or relative to ~). Omit for global memory.' },
       },
