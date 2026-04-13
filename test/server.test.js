@@ -20,6 +20,7 @@ const {
   compositeScore,
   ftsPositionScore,
   CHANNEL_WEIGHTS,
+  COMPACT_SNIPPET_LENGTH,
   sanitizeSearchLimit,
   collectCandidates,
   hydrateCandidates,
@@ -512,13 +513,14 @@ describe('composite ranking', () => {
     // Seed an obs with content longer than COMPACT_SNIPPET_LENGTH
     const compactDb = initDb(path.join(tmpDir, 'compact-test.db'));
     const e = upsertEntity(compactDb, 'CompactTarget', 'test');
-    const longContent = 'a'.repeat(200);
+    const longContent = 'a'.repeat(COMPACT_SNIPPET_LENGTH + 80);
     addObservation(compactDb, e, longContent, 'user', 1.0);
 
     const result = handleTool(compactDb, 'recall', { query: 'CompactTarget', compact: true });
     assert.ok(result.compact === true, 'response should have compact: true');
     const obs = result.results[0].observations[0];
-    assert.ok(obs.content.length <= 125, `content should be truncated, got length ${obs.content.length}`);
+    assert.ok(obs.content.length <= COMPACT_SNIPPET_LENGTH + 1, `content should be truncated, got length ${obs.content.length}`);
+    assert.ok(obs.content.endsWith('…'), 'truncated content should end with ellipsis');
     assert.ok(obs.truncated === true, 'truncated flag should be set');
     compactDb.close();
   });
@@ -526,7 +528,7 @@ describe('composite ranking', () => {
   it('compact: false (default) should return full content', () => {
     const compactDb = initDb(path.join(tmpDir, 'compact-default-test.db'));
     const e = upsertEntity(compactDb, 'FullTarget', 'test');
-    const longContent = 'b'.repeat(200);
+    const longContent = 'b'.repeat(COMPACT_SNIPPET_LENGTH + 80);
     addObservation(compactDb, e, longContent, 'user', 1.0);
 
     const result = handleTool(compactDb, 'recall', { query: 'FullTarget' });

@@ -962,13 +962,13 @@ const TOOLS = [
   },
   {
     name: 'recall',
-    description: 'Search memory for facts matching a query. Returns entities with their observations, sorted by relevance and confidence. Updates access counts (frequently recalled facts resist decay). Use compact: true for a lightweight first pass — content is truncated to ~120 chars and truncated: true is set on each clipped observation. Fetch full content with get_observations({ observation_ids: [...] }).',
+    description: 'Search memory for facts matching a query. Returns entities with their observations, sorted by relevance and confidence. Updates access counts (frequently recalled facts resist decay). Use compact: true for a lightweight first pass — content is truncated to the configured compact snippet length (120 chars by default) and truncated: true is set on each clipped observation. Fetch full content with get_observations({ observation_ids: [...] }).',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Free-text search query' },
         limit: { type: 'number', description: 'Max results (default 20)' },
-        compact: { type: 'boolean', description: 'If true, truncate observation content to ~120 chars. Use get_observations({ observation_ids: [...] }) to expand specific results.' },
+        compact: { type: 'boolean', description: 'If true, truncate observation content to the configured compact snippet length (120 chars by default). Use get_observations({ observation_ids: [...] }) to expand specific results.' },
         project: { type: 'string', description: 'Project workspace path for project-scoped memory (absolute or relative to ~). Omit for global memory.' },
       },
       required: ['query'],
@@ -1440,6 +1440,7 @@ module.exports = {
   ftsPositionScore,
   CHANNEL_WEIGHTS,
   COLLECTION_MULTIPLIER,
+  COMPACT_SNIPPET_LENGTH,
   sanitizeSearchLimit,
   addCandidate,
   collectCandidates,
