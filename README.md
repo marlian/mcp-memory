@@ -16,7 +16,7 @@ Persistent memory for LLMs via [Model Context Protocol](https://modelcontextprot
 - **Cognitive decay** — facts fade over time unless recalled, mimicking human memory. Frequently accessed facts build stability and resist decay
 - **Event grouping** — bundle related observations under sessions, meetings, or decisions for coherent recall
 - **Provenance primitives** — fetch observations directly by ID or event, without running a new search
-- **Soft delete** — `forget` tombstones facts rather than destroying them. Deleted rows are excluded from retrieval but the underlying data remains recoverable
+- **Soft delete** — `forget` tombstones facts rather than destroying them. Deleted rows are excluded from all retrieval but remain in the database (recoverable via direct SQLite access if needed)
 - **Project-scoped memory** — one server, many workspaces. Each project gets its own isolated database, created lazily on first use
 - **Duplicate detection** — identical observations are silently deduplicated
 - **Direct stdio** — wire it straight into your client's JSON config. No wrapper, no proxy
