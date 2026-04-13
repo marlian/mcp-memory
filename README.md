@@ -337,7 +337,7 @@ Decay is computed at **read time** — no background jobs, no cron. The database
 |------|----------------|-----------------|-------------|
 | `remember` | `entity`, `observation` | `entity_type`, `source`, `confidence`, `event_id`, `project` | Store a fact about an entity |
 | `remember_batch` | `facts[]` | `project` | Store multiple facts at once |
-| `recall` | `query` | `limit`, `project` | Search memory by free text |
+| `recall` | `query` | `limit`, `compact`, `project` | Search memory by free text. `compact: true` returns truncated snippets — expand with `get_observations` |
 | `recall_entity` | `entity` | `project` | Get everything about an entity |
 | `relate` | `from`, `to`, `relation_type` | `context`, `project` | Link two entities |
 | `forget` | — | `observation_id`, `entity`, `project` | Remove a fact or entity |
@@ -355,6 +355,7 @@ Decay is computed at **read time** — no background jobs, no cron. The database
 | `MEMORY_DB_PATH` | `./memory.db` | Path to the global SQLite database |
 | `MEMORY_HALF_LIFE_WEEKS` | `12` | Decay half-life for global memory (weeks) |
 | `PROJECT_MEMORY_HALF_LIFE_WEEKS` | `52` | Decay half-life for project-scoped memory (weeks) |
+| `COMPACT_SNIPPET_LENGTH` | `120` | Max chars per observation when `recall` is called with `compact: true` |
 
 ### How to set them
 
