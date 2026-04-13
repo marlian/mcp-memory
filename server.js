@@ -797,7 +797,10 @@ function scoreCandidates(observations, candidateMap, halfLifeWeeks, limit) {
     .slice(0, limit);
 }
 
-function groupResults(results) {
+// Maximum content length for compact recall responses.
+const COMPACT_SNIPPET_LENGTH = 120;
+
+function groupResults(results, compact = false) {
   const grouped = Object.create(null);
   for (const r of results) {
     if (!grouped[r.entity_name]) {
@@ -807,15 +810,22 @@ function groupResults(results) {
         observations: [],
       };
     }
+    let content = r.content;
+    let truncated;
+    if (compact && content && content.length > COMPACT_SNIPPET_LENGTH) {
+      content = content.slice(0, COMPACT_SNIPPET_LENGTH) + '…';
+      truncated = true;
+    }
     const obs = {
       id: r.id,
-      content: r.content,
+      content,
       confidence: r.effective_confidence,
       composite_score: r.composite_score,
       source: r.source,
       access_count: r.access_count,
       created_at: r.created_at,
     };
+    if (truncated) obs.truncated = true;
     if (r.event_id) {
       obs.event_id = r.event_id;
       obs.event_label = r.event_label;
@@ -825,6 +835,7 @@ function groupResults(results) {
   }
 
   const response = { results: Object.values(grouped), total_facts: results.length };
+  if (compact) response.compact = true;
   if (results.length === 0) {
     response.hint = 'No results found. Try list_entities to browse available entities, or use broader search terms.';
   }
@@ -945,12 +956,13 @@ const TOOLS = [
   },
   {
     name: 'recall',
-    description: 'Search memory for facts matching a query. Returns entities with their observations, sorted by relevance and confidence. Updates access counts (frequently recalled facts resist decay).',
+    description: 'Search memory for facts matching a query. Returns entities with their observations, sorted by relevance and confidence. Updates access counts (frequently recalled facts resist decay). Use compact: true for a lightweight first pass — content is truncated to ~120 chars and truncated: true is set on each clipped observation. Fetch full content with get_observations(ids).',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Free-text search query' },
         limit: { type: 'number', description: 'Max results (default 20)' },
+        compact: { type: 'boolean', description: 'If true, truncate observation content to ~120 chars. Use get_observations to expand specific results.' },
         project: { type: 'string', description: 'Project workspace path for project-scoped memory (absolute or relative to ~). Omit for global memory.' },
       },
       required: ['query'],
@@ -1127,7 +1139,7 @@ function handleTool(defaultDb, name, args) {
 
     case 'recall': {
       const results = searchMemory(db, args.query, args.limit ?? 20, halfLife);
-      return groupResults(results);
+      return groupResults(results, args.compact === true);
     }
 
     case 'recall_entity': {

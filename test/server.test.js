@@ -508,6 +508,35 @@ describe('composite ranking', () => {
     assert.equal(typeof firstObs.composite_score, 'number', 'missing composite_score');
   });
 
+  it('compact: true should truncate long content and set truncated flag', () => {
+    // Seed an obs with content longer than COMPACT_SNIPPET_LENGTH
+    const compactDb = initDb(path.join(tmpDir, 'compact-test.db'));
+    const e = upsertEntity(compactDb, 'CompactTarget', 'test');
+    const longContent = 'a'.repeat(200);
+    addObservation(compactDb, e, longContent, 'user', 1.0);
+
+    const result = handleTool(compactDb, 'recall', { query: 'CompactTarget', compact: true });
+    assert.ok(result.compact === true, 'response should have compact: true');
+    const obs = result.results[0].observations[0];
+    assert.ok(obs.content.length <= 125, `content should be truncated, got length ${obs.content.length}`);
+    assert.ok(obs.truncated === true, 'truncated flag should be set');
+    compactDb.close();
+  });
+
+  it('compact: false (default) should return full content', () => {
+    const compactDb = initDb(path.join(tmpDir, 'compact-default-test.db'));
+    const e = upsertEntity(compactDb, 'FullTarget', 'test');
+    const longContent = 'b'.repeat(200);
+    addObservation(compactDb, e, longContent, 'user', 1.0);
+
+    const result = handleTool(compactDb, 'recall', { query: 'FullTarget' });
+    const obs = result.results[0].observations[0];
+    assert.equal(obs.content.length, 200, 'full content should be returned without compact flag');
+    assert.ok(!obs.truncated, 'truncated flag should not be set');
+    assert.ok(!result.compact, 'response should not have compact: true');
+    compactDb.close();
+  });
+
   it('collectCandidates should accumulate multi-channel metadata in a Map', () => {
     const candidates = collectCandidates(rankDb, 'Zara', 30, 200);
     const zaraObs = rankDb.prepare(`
