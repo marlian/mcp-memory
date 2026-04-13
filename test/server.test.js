@@ -14,6 +14,8 @@ const {
   handleTool,
   createEvent,
   getFullEvent,
+  getObservationsByIds,
+  getEventObservations,
   decayedConfidence,
   compositeScore,
   ftsPositionScore,
@@ -190,6 +192,95 @@ describe('events', () => {
     const matched = eventRows.events.find(e => e.id === eventId);
     assert.ok(matched, 'event should still be discoverable');
     assert.equal(matched.observation_count, 0, 'deleted event observation should not count in recall_events');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// provenance primitives
+// ---------------------------------------------------------------------------
+describe('provenance primitives', () => {
+  it('getObservationsByIds should preserve caller order and skip tombstoned observations', () => {
+    const entityId = upsertEntity(testDb, 'OrderedEntity', 'test');
+    const first = addObservation(testDb, entityId, 'first ordered fact', 'user', 1.0);
+    const second = addObservation(testDb, entityId, 'second ordered fact', 'user', 0.8);
+
+    handleTool(testDb, 'forget', { observation_id: first });
+
+    const result = getObservationsByIds(testDb, [second, first], 12);
+    assert.equal(result.total, 1, 'tombstoned observations should be skipped');
+    assert.deepStrictEqual(result.observations.map(o => o.id), [second], 'returned order should follow requested IDs for surviving rows');
+    assert.equal(typeof result.observations[0].effective_confidence, 'number', 'effective_confidence should be present');
+  });
+
+  it('get_observations tool should return event metadata for fetched observations', () => {
+    const entityId = upsertEntity(testDb, 'ProvenanceEventEntity', 'test');
+    const eventId = createEvent(testDb, 'Observation provenance event', '2026-04-13', 'session', null, null);
+    const obsId = addObservation(testDb, entityId, 'fact with event provenance', 'user', 1.0, eventId);
+
+    const result = handleTool(testDb, 'get_observations', { observation_ids: [obsId] });
+    assert.equal(result.total, 1);
+    assert.equal(result.requested, 1);
+    assert.equal(result.observations[0].id, obsId);
+    assert.equal(result.observations[0].event_id, eventId);
+    assert.equal(result.observations[0].event_label, 'Observation provenance event');
+  });
+
+  it('getObservationsByIds should return consistent requested=0 for empty or invalid inputs', () => {
+    const empty = getObservationsByIds(testDb, [], 12);
+    const invalid = getObservationsByIds(testDb, [-1, 0, 1.5], 12);
+
+    assert.deepStrictEqual(empty, { observations: [], total: 0, requested: 0 });
+    assert.deepStrictEqual(invalid, { observations: [], total: 0, requested: 0 });
+  });
+
+  it('getObservationsByIds should preserve observation-time entity_type snapshots', () => {
+    const entityId = upsertEntity(testDb, 'SnapshotEntity', 'original_type');
+    const obsId = addObservation(testDb, entityId, 'snapshot fact', 'user', 0.9);
+    upsertEntity(testDb, 'SnapshotEntity', 'updated_type');
+
+    const result = getObservationsByIds(testDb, [obsId], 12);
+    assert.equal(result.total, 1);
+    assert.equal(result.observations[0].entity_type, 'original_type');
+    assert.equal(result.observations[0].stored_confidence, 0.9);
+    assert.equal(typeof result.observations[0].confidence, 'number');
+    assert.equal(result.observations[0].confidence, result.observations[0].effective_confidence);
+  });
+
+  it('getObservationsByIds should handle large ID batches without SQLite placeholder overflow', () => {
+    const entityId = upsertEntity(testDb, 'LargeBatchEntity', 'test');
+    const obsId = addObservation(testDb, entityId, 'large batch fact', 'user', 1.0);
+    const ids = Array.from({ length: 1100 }, (_, i) => i + 100000);
+    ids.splice(550, 0, obsId);
+
+    const result = getObservationsByIds(testDb, ids, 12);
+    assert.equal(result.total, 1);
+    assert.equal(result.observations[0].id, obsId);
+  });
+
+  it('getEventObservations should return event facts in chronological order', () => {
+    const entityId = upsertEntity(testDb, 'ChronoEventEntity', 'test');
+    const eventId = createEvent(testDb, 'Chrono event', '2026-04-13', 'session', null, null);
+    const first = addObservation(testDb, entityId, 'chronological first', 'user', 1.0, eventId);
+    const second = addObservation(testDb, entityId, 'chronological second', 'user', 1.0, eventId);
+
+    const result = getEventObservations(testDb, eventId, 12);
+    assert.ok(result, 'event should be found');
+    assert.equal(result.total, 2);
+    assert.deepStrictEqual(result.observations.map(o => o.id), [first, second], 'event observations should be chronological');
+  });
+
+  it('get_event_observations should return found event with empty observations after tombstoning', () => {
+    const entityId = upsertEntity(testDb, 'EmptyEventEntity', 'test');
+    const eventId = createEvent(testDb, 'Now empty event', '2026-04-13', 'session', null, null);
+    const obsId = addObservation(testDb, entityId, 'temporary event fact', 'user', 1.0, eventId);
+
+    handleTool(testDb, 'forget', { observation_id: obsId });
+
+    const result = handleTool(testDb, 'get_event_observations', { event_id: eventId });
+    assert.equal(result.found, true, 'event should still exist even when facts are deleted');
+    assert.equal(result.total, 0, 'tombstoned event observations should be hidden');
+    assert.deepStrictEqual(result.observations, []);
+    assert.equal(result.event.id, eventId);
   });
 });
 
