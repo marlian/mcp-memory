@@ -36,7 +36,7 @@ Every MCP tool invocation is logged with:
 | `client_version` | `0.43.6` |
 | `client_source` | `protocol` / `env` / `none` |
 | `db_scope` | `global` / `project` |
-| `project_path` | `/Users/you/some-repo` or null |
+| `project_path` | `/path/to/project` or null |
 | `duration_ms` | `12.4` |
 | `args_summary` | Sanitized JSON (see below) |
 | `result_summary` | Counts only, never data |
