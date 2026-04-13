@@ -409,11 +409,13 @@ function addObservation(db, entityId, content, source = 'user', confidence = 1.0
 
 function touchObservations(db, observationIds) {
   if (!observationIds.length) return;
-  const stmt = db.prepare(
-    'UPDATE observations SET access_count = access_count + 1, last_accessed = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL'
-  );
-  for (const id of observationIds) {
-    stmt.run(id);
+  const chunkSize = 900;
+  for (let i = 0; i < observationIds.length; i += chunkSize) {
+    const chunk = observationIds.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    db.prepare(
+      `UPDATE observations SET access_count = access_count + 1, last_accessed = datetime('now') WHERE id IN (${placeholders}) AND deleted_at IS NULL`
+    ).run(...chunk);
   }
 }
 
@@ -498,6 +500,81 @@ function getFullEvent(db, eventId, halfLifeWeeks = null) {
     entities: Object.values(grouped),
     total_observations: observations.length,
   };
+}
+
+function getObservationsByIds(db, observationIds, halfLifeWeeks = null) {
+  if (!Array.isArray(observationIds) || observationIds.length === 0) {
+    return { observations: [], total: 0, requested: 0 };
+  }
+
+  const orderedIds = [];
+  const seen = new Set();
+  for (const rawId of observationIds) {
+    if (!Number.isInteger(rawId) || rawId <= 0 || seen.has(rawId)) continue;
+    seen.add(rawId);
+    orderedIds.push(rawId);
+  }
+  if (orderedIds.length === 0) {
+    return { observations: [], total: 0, requested: 0 };
+  }
+
+  const rows = [];
+  const chunkSize = 900;
+  for (let i = 0; i < orderedIds.length; i += chunkSize) {
+    const chunk = orderedIds.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    rows.push(...db.prepare(`
+      SELECT o.*, e.name AS entity_name,
+             ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
+      FROM observations o
+      JOIN entities e ON o.entity_id = e.id
+      LEFT JOIN events ev ON o.event_id = ev.id
+      WHERE o.id IN (${placeholders}) AND o.deleted_at IS NULL AND e.deleted_at IS NULL
+    `).all(...chunk));
+  }
+
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const observations = orderedIds
+    .map(id => byId.get(id))
+    .filter(Boolean)
+    .map(obs => {
+      const effectiveConfidence = decayedConfidence(obs, halfLifeWeeks);
+      return {
+        ...obs,
+        stored_confidence: obs.confidence,
+        confidence: effectiveConfidence,
+        effective_confidence: effectiveConfidence,
+      };
+    });
+
+  touchObservations(db, observations.map(o => o.id));
+  return { observations, total: observations.length, requested: orderedIds.length };
+}
+
+function getEventObservations(db, eventId, halfLifeWeeks = null) {
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
+  if (!event) return null;
+
+  const observations = db.prepare(`
+    SELECT o.*, e.name AS entity_name,
+           ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
+    FROM observations o
+    JOIN entities e ON o.entity_id = e.id
+    LEFT JOIN events ev ON o.event_id = ev.id
+    WHERE o.event_id = ? AND o.deleted_at IS NULL AND e.deleted_at IS NULL
+    ORDER BY o.created_at ASC, o.id ASC
+  `).all(eventId).map(obs => {
+    const effectiveConfidence = decayedConfidence(obs, halfLifeWeeks);
+    return {
+      ...obs,
+      stored_confidence: obs.confidence,
+      confidence: effectiveConfidence,
+      effective_confidence: effectiveConfidence,
+    };
+  });
+
+  touchObservations(db, observations.map(o => o.id));
+  return { event, observations, total: observations.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -971,6 +1048,35 @@ const TOOLS = [
       required: ['event_id'],
     },
   },
+  {
+    name: 'get_observations',
+    description: 'Fetch observations directly by observation ID. Use this to hydrate provenance from known results without running a new search.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        observation_ids: {
+          type: 'array',
+          items: { type: 'integer', minimum: 1 },
+          uniqueItems: true,
+          description: 'Positive integer observation IDs to fetch directly',
+        },
+        project: { type: 'string', description: 'Project workspace path for project-scoped memory (absolute or relative to ~). Omit for global memory.' },
+      },
+      required: ['observation_ids'],
+    },
+  },
+  {
+    name: 'get_event_observations',
+    description: 'Fetch raw observations for a known event ID without the grouped recall_event envelope.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'number', description: 'Event ID to fetch observations for' },
+        project: { type: 'string', description: 'Project workspace path for project-scoped memory (absolute or relative to ~). Omit for global memory.' },
+      },
+      required: ['event_id'],
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1149,6 +1255,19 @@ function handleTool(defaultDb, name, args) {
       return { found: true, ...result };
     }
 
+    case 'get_observations': {
+      const result = getObservationsByIds(db, args.observation_ids, halfLife);
+      return result;
+    }
+
+    case 'get_event_observations': {
+      const result = getEventObservations(db, args.event_id, halfLife);
+      if (!result) {
+        return { found: false, message: `Event with id ${args.event_id} not found` };
+      }
+      return { found: true, ...result };
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1181,6 +1300,8 @@ async function main() {
     remember_event: ['label'],
     recall_events: [],
     recall_event: ['event_id'],
+    get_observations: ['observation_ids'],
+    get_event_observations: ['event_id'],
   };
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -1276,6 +1397,8 @@ module.exports = {
   handleTool,
   createEvent,
   getFullEvent,
+  getObservationsByIds,
+  getEventObservations,
   decayedConfidence,
   compositeScore,
   ftsPositionScore,
