@@ -606,6 +606,66 @@ describe('composite ranking', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Phrase bonus (fts_phrase channel)
+// ---------------------------------------------------------------------------
+describe('phrase bonus', () => {
+  let phraseDb;
+  let phraseObsId;   // obs with adjacent terms
+  let orOnlyObsId;   // obs with terms present but NOT adjacent
+
+  before(() => {
+    phraseDb = initDb(path.join(tmpDir, 'phrase-test.db'));
+
+    // "Alice terapia" are adjacent — phrase query should hit this
+    const e1 = upsertEntity(phraseDb, 'PhraseTarget', 'person');
+    phraseObsId = addObservation(phraseDb, e1, 'Alice terapia is the weekly focus', 'user', 0.9);
+
+    // Terms present but not adjacent — OR query hits, phrase query should not
+    const e2 = upsertEntity(phraseDb, 'OrTarget', 'person');
+    orOnlyObsId = addObservation(phraseDb, e2, 'Alice had a long session today about something called terapia', 'user', 0.9);
+  });
+
+  after(() => {
+    phraseDb.close();
+  });
+
+  it('adjacent-term observation should have fts_phrase as best_channel', () => {
+    const candidates = collectCandidates(phraseDb, 'Alice terapia', 60, 200);
+    const c = candidates.get(phraseObsId);
+    assert.ok(c, 'phrase-adjacent observation should be in candidate map');
+    assert.equal(c.best_channel, 'fts_phrase', `expected fts_phrase channel, got ${c.best_channel}`);
+    assert.ok(c.best_channel_weight >= 1.15, `expected weight >= 1.15, got ${c.best_channel_weight}`);
+  });
+
+  it('non-adjacent observation should NOT have fts_phrase channel', () => {
+    const candidates = collectCandidates(phraseDb, 'Alice terapia', 60, 200);
+    const c = candidates.get(orOnlyObsId);
+    assert.ok(c, 'OR-only observation should still be in candidate map via fts channel');
+    assert.ok(!c.channels.has('fts_phrase'), 'non-adjacent obs should not have fts_phrase channel');
+  });
+
+  it('phrase-adjacent observation should rank above non-adjacent in searchMemory', () => {
+    const results = searchMemory(phraseDb, 'Alice terapia', 10, 12);
+    const phraseResult = results.find(r => r.id === phraseObsId);
+    const orResult = results.find(r => r.id === orOnlyObsId);
+    assert.ok(phraseResult, 'phrase-adjacent obs should appear in results');
+    assert.ok(orResult, 'OR-only obs should also appear in results');
+    assert.ok(
+      phraseResult.composite_score > orResult.composite_score,
+      `phrase hit (${phraseResult.composite_score}) should outrank OR-only hit (${orResult.composite_score})`
+    );
+  });
+
+  it('single-term query should not run phrase path (no regression)', () => {
+    const candidates = collectCandidates(phraseDb, 'Alice', 60, 200);
+    // No candidate should have fts_phrase on a single-term query
+    for (const [, c] of candidates) {
+      assert.ok(!c.channels.has('fts_phrase'), 'single-term query should not produce fts_phrase candidates');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ftsPositionScore
 // ---------------------------------------------------------------------------
 describe('ftsPositionScore', () => {

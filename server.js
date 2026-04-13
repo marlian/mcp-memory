@@ -584,7 +584,8 @@ function getEventObservations(db, eventId, halfLifeWeeks = null) {
 // Composite scoring — channel weights and helpers
 // ---------------------------------------------------------------------------
 const CHANNEL_WEIGHTS = {
-  fts: 1.0,              // FTS match (best relevance signal)
+  fts_phrase: 1.15,      // FTS phrase match — adjacent terms in content (strongest signal)
+  fts: 1.0,              // FTS term match (best single-term relevance signal)
   entity_exact: 0.9,     // query = entity name (case insensitive)
   entity_like: 0.7,      // query is substring of entity name
   content_like: 0.5,     // keyword found in observation content
@@ -666,7 +667,24 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
   const candidates = new Map();
   const terms = q.split(/\s+/).filter(Boolean);
 
-  // 1. FTS5 — ORDER BY rank gives best-to-worst; track position index
+  // 1a. FTS5 phrase — multi-term queries only. Adjacent-term match scores higher
+  //     than OR match, so run this first so addCandidate records fts_phrase as
+  //     best_channel for hits that qualify.
+  if (terms.length > 1) {
+    try {
+      const phraseQuery = '"' + terms.map(t => t.replace(/"/g, '')).join(' ') + '"';
+      const phraseResults = db.prepare(`
+        SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?
+      `).all(phraseQuery, collectLimit);
+      for (let i = 0; i < phraseResults.length; i++) {
+        addCandidate(candidates, phraseResults[i].rowid, 'fts_phrase', maxCandidates, i);
+      }
+    } catch (_) {
+      // Phrase query can fail on edge cases — fall through to OR
+    }
+  }
+
+  // 1b. FTS5 OR — ORDER BY rank gives best-to-worst; track position index
   try {
     const ftsQuery = terms.map(t => `"${t.replace(/"/g, '')}"`).join(' OR ');
     const ftsResults = db.prepare(`
