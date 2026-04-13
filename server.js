@@ -128,7 +128,7 @@ loadDotEnv();
 // next to server.js with any of the keys below. Unknown keys are ignored,
 // missing keys fall back to the default.
 const DEFAULT_EXAMPLES = {
-  entities: ['Alice', 'ProjectX', 'React'],
+  entities: ['User', 'ProjectX', 'React'],
   entity_types: ['person', 'project', 'technology'],
   relations: ['works_with', 'uses', 'depends_on'],
   event_labels: ['Weekly standup', 'Architecture decision', 'Debugging session'],

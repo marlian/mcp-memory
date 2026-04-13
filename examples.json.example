@@ -2,7 +2,7 @@
   "_comment": "Optional: override example values shown inside MCP tool descriptions. Copy this file to examples.json next to server.js to customize. Any key can be omitted — missing keys fall back to built-in defaults. Unknown keys are ignored.",
   "_why": "Tool descriptions include examples to guide the model. Generic defaults work, but tailoring the examples to your actual domain (team jargon, typical entities, real event labels) often improves model behavior. The examples.json file stays local (gitignored) so each deployment can differ without forking the code.",
 
-  "entities": ["Alice", "ProjectX", "React"],
+  "entities": ["User", "ProjectX", "React"],
   "entity_types": ["person", "project", "technology"],
   "relations": ["works_with", "uses", "depends_on"],
   "event_labels": ["Weekly standup", "Architecture decision", "Debugging session"],
