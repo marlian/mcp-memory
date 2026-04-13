@@ -75,11 +75,13 @@ Every tool must:
 
 `get_observations` and `get_event_observations` are provenance primitives — they bypass the scoring pipeline and return raw observations by ID. Tombstone semantics apply (deleted observations are excluded).
 
+`recall` accepts an optional `compact: boolean` param. When true, `groupResults` truncates each observation's content to `COMPACT_SNIPPET_LENGTH - 1` chars and appends `'…'`, so the result fits within the configured limit. The response carries `compact: true` and each clipped observation has `truncated: true`. Use `get_observations` to expand specific items.
+
 ## No hardcoding
 
 - Config comes from env vars. Defaults live in `server.js` only as fallback literals.
 - Document any new env vars in `.env.example`.
-- `MEMORY_DB_PATH`, `MEMORY_HALF_LIFE_WEEKS`, `PROJECT_MEMORY_HALF_LIFE_WEEKS` are the current env vars.
+- `MEMORY_DB_PATH`, `MEMORY_HALF_LIFE_WEEKS`, `PROJECT_MEMORY_HALF_LIFE_WEEKS`, `COMPACT_SNIPPET_LENGTH` (default 120) are the current env vars.
 - Tool description examples come from `examples.json` (optional, merged with `DEFAULT_EXAMPLES`). Never hardcode entity names, relation types, or event labels directly in TOOLS descriptions.
 
 ## Security
