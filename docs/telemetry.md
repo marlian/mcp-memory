@@ -58,10 +58,13 @@ For `recall` calls, additional metrics capture the ranking pipeline:
 | `score_median` | `0.61` |
 | `compact` | `0` or `1` |
 
+Additional metadata that may be logged:
+
+- Entity names, search queries, and event labels when needed for telemetry records (see [design rationale](#design-rationale))
+
 ## What it does NOT log
 
 - Observation content (replaced with `<N chars>`)
-- Entity names, queries, labels — these ARE logged (see [design rationale](#design-rationale))
 - Result data — only counts (entities returned, observations stored, etc.)
 
 ## Client identity
