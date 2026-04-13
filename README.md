@@ -24,6 +24,7 @@ Switch providers tomorrow. Your memory stays.
 - **Provenance primitives** — fetch observations directly by ID or event, without running a new search
 - **Soft delete** — `forget` tombstones facts rather than destroying them. Deleted rows are excluded from all retrieval but remain in the database (recoverable via direct SQLite access if needed)
 - **Project-scoped memory** — one server, many workspaces. Each project gets its own isolated database, created lazily on first use
+- **Opt-in telemetry** — [usage analytics](docs/telemetry.md) with client identity, tool call timing, and search ranking metrics. Separate SQLite DB, zero overhead when disabled
 - **Zero infrastructure** — no external database, no API keys, no server to manage. A single Node.js process, a local SQLite file
 - **Duplicate detection** — identical observations are silently deduplicated
 - **Direct stdio** — wire it straight into your client's JSON config. No wrapper, no proxy
@@ -356,6 +357,7 @@ Decay is computed at **read time** — no background jobs, no cron. The database
 | `MEMORY_HALF_LIFE_WEEKS` | `12` | Decay half-life for global memory (weeks) |
 | `PROJECT_MEMORY_HALF_LIFE_WEEKS` | `52` | Decay half-life for project-scoped memory (weeks) |
 | `COMPACT_SNIPPET_LENGTH` | `120` | Max chars per observation when `recall` is called with `compact: true` |
+| `MEMORY_TELEMETRY_PATH` | *(disabled)* | Path to telemetry SQLite DB. When set, logs tool calls, timing, and search metrics. See [docs/telemetry.md](docs/telemetry.md) |
 
 ### How to set them
 
