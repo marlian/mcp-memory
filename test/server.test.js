@@ -333,27 +333,27 @@ describe('composite ranking', () => {
     rankDb = initDb(path.join(tmpDir, 'rank-test.db'));
 
     // Seed data designed for ranking tests:
-    // Entity "Alice" with observations about therapy (should FTS-match "Alice terapia")
-    const alice = upsertEntity(rankDb, 'Alice', 'person');
-    addObservation(rankDb, alice, 'Alice is the therapist, weekly terapia sessions', 'user', 1.0);
-    addObservation(rankDb, alice, 'Alice prefers cognitive behavioral approach', 'user', 0.9);
+    // Entity "Zara" with observations about architecture (should FTS-match "Zara deploy")
+    const zara = upsertEntity(rankDb, 'Zara', 'person');
+    addObservation(rankDb, zara, 'Zara is the lead architect, handles deploy workflows', 'user', 1.0);
+    addObservation(rankDb, zara, 'Zara prefers trunk-based development', 'user', 0.9);
 
-    // Entity "AliceSprings" — should match entity_like for "Alice" but NOT entity_exact
-    const aliceSprings = upsertEntity(rankDb, 'AliceSprings', 'location');
-    addObservation(rankDb, aliceSprings, 'A city in Australia, hot climate', 'user', 1.0);
+    // Entity "ZaraMobile" — should match entity_like for "Zara" but NOT entity_exact
+    const zaraMobile = upsertEntity(rankDb, 'ZaraMobile', 'project');
+    addObservation(rankDb, zaraMobile, 'A mobile app project, cross-platform', 'user', 1.0);
 
-    // Entity "Bob" with observation mentioning "Alice" in content only
-    const bob = upsertEntity(rankDb, 'Bob', 'person');
-    addObservation(rankDb, bob, 'Bob once mentioned Alice in passing', 'user', 1.0);
+    // Entity "Tom" with observation mentioning "Zara" in content only
+    const tom = upsertEntity(rankDb, 'Tom', 'person');
+    addObservation(rankDb, tom, 'Tom once mentioned Zara in passing', 'user', 1.0);
 
-    // Entity "Cooking" — high confidence, irrelevant to Alice
+    // Entity "Cooking" — high confidence, irrelevant to Zara
     const cooking = upsertEntity(rankDb, 'Cooking', 'hobby');
     addObservation(rankDb, cooking, 'Cooking pasta is a daily ritual', 'user', 1.0);
 
-    // Event with label mentioning Alice
-    const evId = createEvent(rankDb, 'Session with Alice - intake', null, 'session', null, null);
-    const therapy = upsertEntity(rankDb, 'TherapyLog', 'log');
-    addObservation(rankDb, therapy, 'First session notes', 'user', 0.8, evId);
+    // Event with label mentioning Zara
+    const evId = createEvent(rankDb, 'Sprint with Zara - kickoff', null, 'session', null, null);
+    const sprintLog = upsertEntity(rankDb, 'SprintLog', 'log');
+    addObservation(rankDb, sprintLog, 'First sprint notes', 'user', 0.8, evId);
   });
 
   after(() => {
@@ -361,7 +361,7 @@ describe('composite ranking', () => {
   });
 
   it('should return composite_score on all results', () => {
-    const results = searchMemory(rankDb, 'Alice', 10, 12);
+    const results = searchMemory(rankDb, 'Zara', 10, 12);
     assert.ok(results.length > 0, 'no results');
     for (const r of results) {
       assert.equal(typeof r.composite_score, 'number', `missing composite_score on obs ${r.id}`);
@@ -371,27 +371,27 @@ describe('composite ranking', () => {
   });
 
   it('better FTS match (more terms) should rank above weaker FTS match', () => {
-    // "Alice terapia" — Alice's obs contains both terms, Bob's obs contains only "Alice"
-    // Both match FTS, but Alice's obs should have a better FTS position (more relevant)
-    const results = searchMemory(rankDb, 'Alice terapia', 10, 12);
-    const aliceObs = results.find(r => r.entity_name === 'Alice' && r.content.includes('terapia'));
-    const bobObs = results.find(r => r.entity_name === 'Bob');
+    // "Zara deploy" — Zara's obs contains both terms, Tom's obs contains only "Zara"
+    // Both match FTS, but Zara's obs should have a better FTS position (more relevant)
+    const results = searchMemory(rankDb, 'Zara deploy', 10, 12);
+    const zaraObs = results.find(r => r.entity_name === 'Zara' && r.content.includes('deploy'));
+    const tomObs = results.find(r => r.entity_name === 'Tom');
     // Assert both exist before comparing — conditional checks hide regressions
-    assert.ok(aliceObs, 'Alice terapia observation not found in results');
-    assert.ok(bobObs, 'Bob observation not found in results');
+    assert.ok(zaraObs, 'Zara deploy observation not found in results');
+    assert.ok(tomObs, 'Tom observation not found in results');
     assert.ok(
-      aliceObs.composite_score >= bobObs.composite_score,
-      `better FTS match (${aliceObs.composite_score}) should rank >= weaker match (${bobObs.composite_score})`
+      zaraObs.composite_score >= tomObs.composite_score,
+      `better FTS match (${zaraObs.composite_score}) should rank >= weaker match (${tomObs.composite_score})`
     );
-    assert.ok(results[0].content.includes('terapia'), 'best result should contain both query terms');
+    assert.ok(results[0].content.includes('deploy'), 'best result should contain both query terms');
   });
 
   it('entity_exact should rank above entity_like', () => {
-    const results = searchMemory(rankDb, 'Alice', 10, 12);
-    const exactObs = results.filter(r => r.entity_name === 'Alice');
-    const likeObs = results.filter(r => r.entity_name === 'AliceSprings');
-    assert.ok(exactObs.length > 0, 'no entity_exact results for Alice');
-    assert.ok(likeObs.length > 0, 'no entity_like results for AliceSprings');
+    const results = searchMemory(rankDb, 'Zara', 10, 12);
+    const exactObs = results.filter(r => r.entity_name === 'Zara');
+    const likeObs = results.filter(r => r.entity_name === 'ZaraMobile');
+    assert.ok(exactObs.length > 0, 'no entity_exact results for Zara');
+    assert.ok(likeObs.length > 0, 'no entity_like results for ZaraMobile');
     const bestExact = Math.max(...exactObs.map(r => r.composite_score));
     const bestLike = Math.max(...likeObs.map(r => r.composite_score));
     assert.ok(
@@ -401,29 +401,29 @@ describe('composite ranking', () => {
   });
 
   it('irrelevant high-confidence fact should NOT outrank relevant lower-confidence fact', () => {
-    // "Alice" query — Cooking (high conf, irrelevant) should not appear above Alice obs
-    const results = searchMemory(rankDb, 'Alice', 10, 12);
+    // "Zara" query — Cooking (high conf, irrelevant) should not appear above Zara obs
+    const results = searchMemory(rankDb, 'Zara', 10, 12);
     const cookingObs = results.find(r => r.entity_name === 'Cooking');
-    const aliceObs = results.find(r => r.entity_name === 'Alice');
+    const aliceObs = results.find(r => r.entity_name === 'Zara');
     if (cookingObs && aliceObs) {
       assert.ok(
         aliceObs.composite_score > cookingObs.composite_score,
         'irrelevant high-confidence fact outranked relevant fact — ranking regression'
       );
     }
-    // Cooking shouldn't even appear for "Alice" query
-    assert.equal(cookingObs, undefined, 'Cooking should not match Alice query at all');
+    // Cooking shouldn't even appear for "Zara" query
+    assert.equal(cookingObs, undefined, 'Cooking should not match Zara query at all');
   });
 
   it('should enforce limit after scoring', () => {
-    const results = searchMemory(rankDb, 'Alice', 2, 12);
+    const results = searchMemory(rankDb, 'Zara', 2, 12);
     assert.ok(results.length <= 2, `returned ${results.length} results, expected <= 2`);
   });
 
   it('order independence — shuffled candidate IDs produce identical ranking', () => {
     // Run search twice — results should be deterministic regardless of internal order
-    const r1 = searchMemory(rankDb, 'Alice', 10, 12);
-    const r2 = searchMemory(rankDb, 'Alice', 10, 12);
+    const r1 = searchMemory(rankDb, 'Zara', 10, 12);
+    const r2 = searchMemory(rankDb, 'Zara', 10, 12);
     assert.deepStrictEqual(
       r1.map(r => r.id),
       r2.map(r => r.id),
@@ -433,9 +433,9 @@ describe('composite ranking', () => {
 
   it('FTS position should differentiate intra-FTS results (no clamp to 1.0)', () => {
     // Best FTS hit should have higher composite_score than worst FTS hit
-    const results = searchMemory(rankDb, 'Alice terapia', 10, 12);
+    const results = searchMemory(rankDb, 'Zara deploy', 10, 12);
     const ftsResults = results.filter(r =>
-      r.content.includes('Alice') || r.content.includes('terapia')
+      r.content.includes('Zara') || r.content.includes('deploy')
     );
     if (ftsResults.length >= 2) {
       // First and last FTS results should NOT have identical scores
@@ -450,8 +450,8 @@ describe('composite ranking', () => {
   it('global top-k: searchMemory(q, 2) should match searchMemory(q, 10).slice(0, 2)', () => {
     // The collection multiplier ensures per-channel queries don't prematurely
     // truncate candidates before global scoring
-    const narrow = searchMemory(rankDb, 'Alice', 2, 12);
-    const wide = searchMemory(rankDb, 'Alice', 10, 12).slice(0, 2);
+    const narrow = searchMemory(rankDb, 'Zara', 2, 12);
+    const wide = searchMemory(rankDb, 'Zara', 10, 12).slice(0, 2);
     assert.deepStrictEqual(
       narrow.map(r => r.id),
       wide.map(r => r.id),
@@ -479,9 +479,9 @@ describe('composite ranking', () => {
   });
 
   it('deterministic tie-break: identical scores produce stable ordering', () => {
-    const r1 = searchMemory(rankDb, 'Alice', 10, 12);
-    const r2 = searchMemory(rankDb, 'Alice', 10, 12);
-    const r3 = searchMemory(rankDb, 'Alice', 10, 12);
+    const r1 = searchMemory(rankDb, 'Zara', 10, 12);
+    const r2 = searchMemory(rankDb, 'Zara', 10, 12);
+    const r3 = searchMemory(rankDb, 'Zara', 10, 12);
     assert.deepStrictEqual(r1.map(r => r.id), r2.map(r => r.id), 'run 1 vs 2');
     assert.deepStrictEqual(r2.map(r => r.id), r3.map(r => r.id), 'run 2 vs 3');
   });
@@ -492,16 +492,16 @@ describe('composite ranking', () => {
   });
 
   it('limit=0 should return no results', () => {
-    assert.deepStrictEqual(searchMemory(rankDb, 'Alice', 0, 12), []);
+    assert.deepStrictEqual(searchMemory(rankDb, 'Zara', 0, 12), []);
   });
 
   it('limit clamped to 200 max', () => {
-    const results = searchMemory(rankDb, 'Alice', 9999, 12);
+    const results = searchMemory(rankDb, 'Zara', 9999, 12);
     assert.ok(results.length <= 200, `returned ${results.length}, expected <= 200`);
   });
 
   it('recall handler should include composite_score in output', () => {
-    const result = handleTool(rankDb, 'recall', { query: 'Alice', limit: 5 });
+    const result = handleTool(rankDb, 'recall', { query: 'Zara', limit: 5 });
     assert.ok(result.results.length > 0, 'no results from recall handler');
     const firstObs = result.results[0].observations[0];
     assert.equal(typeof firstObs.confidence, 'number', 'missing confidence');
@@ -509,20 +509,20 @@ describe('composite ranking', () => {
   });
 
   it('collectCandidates should accumulate multi-channel metadata in a Map', () => {
-    const candidates = collectCandidates(rankDb, 'Alice', 30, 200);
-    const aliceObs = rankDb.prepare(`
+    const candidates = collectCandidates(rankDb, 'Zara', 30, 200);
+    const zaraObs = rankDb.prepare(`
       SELECT o.id
       FROM observations o
       JOIN entities e ON o.entity_id = e.id
       WHERE e.name = ? AND o.content LIKE ?
       LIMIT 1
-    `).get('Alice', '%therapist%');
+    `).get('Zara', '%architect%');
 
-    assert.ok(aliceObs, 'fixture lookup failed for Alice observation');
-    const candidate = candidates.get(aliceObs.id);
-    assert.ok(candidate, 'Alice observation missing from candidate map');
-    assert.ok(candidate.channels.has('fts'), 'expected FTS channel on Alice candidate');
-    assert.ok(candidate.channels.has('entity_exact'), 'expected entity_exact channel on Alice candidate');
+    assert.ok(zaraObs, 'fixture lookup failed for Zara observation');
+    const candidate = candidates.get(zaraObs.id);
+    assert.ok(candidate, 'Zara observation missing from candidate map');
+    assert.ok(candidate.channels.has('fts'), 'expected FTS channel on Zara candidate');
+    assert.ok(candidate.channels.has('entity_exact'), 'expected entity_exact channel on Zara candidate');
     assert.equal(candidate.best_channel, 'fts', 'expected strongest channel to remain fts');
   });
 
@@ -535,7 +535,7 @@ describe('composite ranking', () => {
   it('hydrateCandidates + scoreCandidates should preserve ranking pipeline behavior', () => {
     const limit = 3;
     const collectLimit = limit * 3;
-    const candidates = collectCandidates(rankDb, 'Alice', collectLimit, Math.max(collectLimit, 200));
+    const candidates = collectCandidates(rankDb, 'Zara', collectLimit, Math.max(collectLimit, 200));
     const hydrated = hydrateCandidates(rankDb, candidates);
     const ranked = scoreCandidates(hydrated, candidates, 12, limit);
 
@@ -543,18 +543,18 @@ describe('composite ranking', () => {
     assert.ok(ranked.length <= limit, 'scored results should respect limit');
     assert.deepStrictEqual(
       ranked.map(r => r.id),
-      searchMemory(rankDb, 'Alice', limit, 12).map(r => r.id),
+      searchMemory(rankDb, 'Zara', limit, 12).map(r => r.id),
       'extracted pipeline drifted from searchMemory behavior'
     );
   });
 
   it('groupResults should preserve grouped recall response shape', () => {
-    const ranked = searchMemory(rankDb, 'Alice', 5, 12);
+    const ranked = searchMemory(rankDb, 'Zara', 5, 12);
     const grouped = groupResults(ranked);
 
     assert.equal(grouped.total_facts, ranked.length);
     assert.ok(Array.isArray(grouped.results), 'grouped results should be an array');
-    assert.ok(grouped.results.length > 0, 'grouped results should not be empty for Alice query');
+    assert.ok(grouped.results.length > 0, 'grouped results should not be empty for Zara query');
     assert.equal(typeof grouped.results[0].entity_name, 'string');
     assert.ok(Array.isArray(grouped.results[0].observations), 'group observations should be an array');
     assert.equal(typeof grouped.results[0].observations[0].confidence, 'number');
@@ -602,6 +602,66 @@ describe('composite ranking', () => {
       [protoObs, ctorObs],
       'observations should remain attached to their special-name entities'
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phrase bonus (fts_phrase channel)
+// ---------------------------------------------------------------------------
+describe('phrase bonus', () => {
+  let phraseDb;
+  let phraseObsId;   // obs with adjacent terms
+  let orOnlyObsId;   // obs with terms present but NOT adjacent
+
+  before(() => {
+    phraseDb = initDb(path.join(tmpDir, 'phrase-test.db'));
+
+    // "Zara deploy" are adjacent — phrase query should hit this
+    const e1 = upsertEntity(phraseDb, 'PhraseTarget', 'person');
+    phraseObsId = addObservation(phraseDb, e1, 'Zara deploy is the weekly milestone', 'user', 0.9);
+
+    // Terms present but not adjacent — OR query hits, phrase query should not
+    const e2 = upsertEntity(phraseDb, 'OrTarget', 'person');
+    orOnlyObsId = addObservation(phraseDb, e2, 'Tom had a long meeting today about something called deploy and Zara was involved', 'user', 0.9);
+  });
+
+  after(() => {
+    phraseDb.close();
+  });
+
+  it('adjacent-term observation should have fts_phrase as best_channel', () => {
+    const candidates = collectCandidates(phraseDb, 'Zara deploy', 60, 200);
+    const c = candidates.get(phraseObsId);
+    assert.ok(c, 'phrase-adjacent observation should be in candidate map');
+    assert.equal(c.best_channel, 'fts_phrase', `expected fts_phrase channel, got ${c.best_channel}`);
+    assert.ok(c.best_channel_weight >= 1.15, `expected weight >= 1.15, got ${c.best_channel_weight}`);
+  });
+
+  it('non-adjacent observation should NOT have fts_phrase channel', () => {
+    const candidates = collectCandidates(phraseDb, 'Zara deploy', 60, 200);
+    const c = candidates.get(orOnlyObsId);
+    assert.ok(c, 'OR-only observation should still be in candidate map via fts channel');
+    assert.ok(!c.channels.has('fts_phrase'), 'non-adjacent obs should not have fts_phrase channel');
+  });
+
+  it('phrase-adjacent observation should rank above non-adjacent in searchMemory', () => {
+    const results = searchMemory(phraseDb, 'Zara deploy', 10, 12);
+    const phraseResult = results.find(r => r.id === phraseObsId);
+    const orResult = results.find(r => r.id === orOnlyObsId);
+    assert.ok(phraseResult, 'phrase-adjacent obs should appear in results');
+    assert.ok(orResult, 'OR-only obs should also appear in results');
+    assert.ok(
+      phraseResult.composite_score > orResult.composite_score,
+      `phrase hit (${phraseResult.composite_score}) should outrank OR-only hit (${orResult.composite_score})`
+    );
+  });
+
+  it('single-term query should not run phrase path (no regression)', () => {
+    const candidates = collectCandidates(phraseDb, 'Zara', 60, 200);
+    // No candidate should have fts_phrase on a single-term query
+    for (const [, c] of candidates) {
+      assert.ok(!c.channels.has('fts_phrase'), 'single-term query should not produce fts_phrase candidates');
+    }
   });
 });
 
