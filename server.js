@@ -253,8 +253,10 @@ function initTelemetryDb(dbPath) {
   return tdb;
 }
 
+let _telemetryInitFailed = false;
+
 function getTelemetryDb() {
-  if (!TELEMETRY_PATH) return null;
+  if (!TELEMETRY_PATH || _telemetryInitFailed) return null;
   if (_telemetryDb) return _telemetryDb;
   try {
     _telemetryDb = initTelemetryDb(TELEMETRY_PATH);
@@ -269,7 +271,8 @@ function getTelemetryDb() {
       `),
     };
   } catch (err) {
-    process.stderr.write(`[memory] telemetry init failed: ${err.message}\n`);
+    _telemetryInitFailed = true;
+    process.stderr.write(`[memory] telemetry init failed (disabled for this session): ${err.message}\n`);
     return null;
   }
   return _telemetryDb;
@@ -1593,25 +1596,28 @@ async function main() {
       }
     }
 
-    const t0 = performance.now();
-    _lastSearchMetrics = null;
+    const t0 = TELEMETRY_PATH ? performance.now() : 0;
+    if (TELEMETRY_PATH) _lastSearchMetrics = null;
     try {
       const result = handleTool(db, name, safeArgs);
-      const durationMs = performance.now() - t0;
 
-      // Telemetry — log call + search metrics if recall-type tool
-      const callId = logToolCall(name, safeArgs, result, durationMs, false);
-      if (callId && _lastSearchMetrics) {
-        if (name === 'recall' && safeArgs.compact) _lastSearchMetrics.compact = true;
-        logSearchMetrics(callId, _lastSearchMetrics);
+      if (TELEMETRY_PATH) {
+        const durationMs = performance.now() - t0;
+        const callId = logToolCall(name, safeArgs, result, durationMs, false);
+        if (callId && _lastSearchMetrics) {
+          if (name === 'recall' && safeArgs.compact) _lastSearchMetrics.compact = true;
+          logSearchMetrics(callId, _lastSearchMetrics);
+        }
       }
 
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
     } catch (err) {
-      const durationMs = performance.now() - t0;
-      logToolCall(name, safeArgs, null, durationMs, true);
+      if (TELEMETRY_PATH) {
+        const durationMs = performance.now() - t0;
+        logToolCall(name, safeArgs, null, durationMs, true);
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify({
           error: err.message,
