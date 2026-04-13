@@ -11,6 +11,7 @@ const {
   ListToolsRequestSchema,
 } = require('@modelcontextprotocol/sdk/types.js');
 const Database = require('better-sqlite3');
+const { version: PKG_VERSION } = require('./package.json');
 
 // ---------------------------------------------------------------------------
 // .env file loader (no deps — process.env always takes precedence)
@@ -1316,7 +1317,7 @@ async function main() {
   const db = initDb(DB_PATH);
 
   const server = new Server(
-    { name: 'memory', version: '0.4.0' },
+    { name: 'memory', version: PKG_VERSION },
     { capabilities: { tools: {} } }
   );
 

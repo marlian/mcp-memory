@@ -39,7 +39,7 @@ npm install
 Want to pin to a stable version instead of tracking `main`?
 
 ```bash
-git clone --branch v0.5.0 https://github.com/marlian/mcp-memory.git
+git clone --branch v0.6.0 https://github.com/marlian/mcp-memory.git
 ```
 
 See [releases](https://github.com/marlian/mcp-memory/releases) for version history.
