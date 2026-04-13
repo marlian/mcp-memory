@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/marlian/mcp-memory)](https://github.com/marlian/mcp-memory/releases/latest)
 [![License](https://img.shields.io/github/license/marlian/mcp-memory)](LICENSE)
 
-![mcp-memory](./assets/hero.png)
+![Hero graphic showing a SQLite-backed knowledge graph connected to MCP terminal clients](./assets/hero.png)
 
 **The same memory, everywhere you work.**
 
