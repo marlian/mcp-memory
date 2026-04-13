@@ -819,7 +819,7 @@ function groupResults(results, compact = false) {
     let content = r.content;
     let truncated;
     if (compact && content && content.length > COMPACT_SNIPPET_LENGTH) {
-      content = content.slice(0, COMPACT_SNIPPET_LENGTH) + '…';
+      content = content.slice(0, Math.max(0, COMPACT_SNIPPET_LENGTH - 1)) + '…';
       truncated = true;
     }
     const obs = {

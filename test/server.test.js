@@ -519,7 +519,7 @@ describe('composite ranking', () => {
     const result = handleTool(compactDb, 'recall', { query: 'CompactTarget', compact: true });
     assert.ok(result.compact === true, 'response should have compact: true');
     const obs = result.results[0].observations[0];
-    assert.ok(obs.content.length <= COMPACT_SNIPPET_LENGTH + 1, `content should be truncated, got length ${obs.content.length}`);
+    assert.ok(obs.content.length <= COMPACT_SNIPPET_LENGTH, `content should be truncated, got length ${obs.content.length}`);
     assert.ok(obs.content.endsWith('…'), 'truncated content should end with ellipsis');
     assert.ok(obs.truncated === true, 'truncated flag should be set');
     compactDb.close();
