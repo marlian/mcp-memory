@@ -25,12 +25,12 @@ All logic lives in `server.js`. Functions are exported at the bottom so `test/se
 
 ### Database schema
 
-Four tables, all with soft-delete via `deleted_at TEXT`:
+Four tables. Soft-delete via `deleted_at TEXT` applies only to `entities` and `observations` — not to `relations` or `events`:
 
 - `entities` — named objects (`id`, `name UNIQUE COLLATE NOCASE`, `entity_type`, `deleted_at`, timestamps)
 - `observations` — atomic facts linked to an entity (`entity_id`, `content`, `source`, `confidence`, `access_count`, `last_accessed`, `deleted_at`, `event_id`, timestamps)
-- `relations` — typed edges between entities (`from_entity_id`, `to_entity_id`, `relation_type`, `context`)
-- `events` — grouped sessions/meetings/decisions (`label`, `event_date`, `event_type`, `context`, `expires_at`)
+- `relations` — typed edges between entities (`from_entity_id`, `to_entity_id`, `relation_type`, `context`) — **no soft-delete**, hard-deleted via CASCADE when an entity is tombstoned
+- `events` — grouped sessions/meetings/decisions (`label`, `event_date`, `event_type`, `context`, `expires_at`) — **no soft-delete**
 
 **Invariant:** every query that reads live data **must** have `deleted_at IS NULL` guards on both `entities` and `observations`. Missing this guard is a tombstone bypass bug.
 
@@ -94,9 +94,17 @@ Every tool must:
 When adding columns to existing tables in `initDb`:
 
 1. Add the column in the `CREATE TABLE IF NOT EXISTS` statement (for fresh DBs)
-2. Add a migration block using `PRAGMA table_info()` to check if the column exists, then `ALTER TABLE ADD COLUMN` (for existing DBs)
+2. Add an idempotent migration block wrapped in `try/catch` for existing DBs — SQLite raises an error if the column already exists, and the catch silently swallows it:
 
-See the `event_id` migration in `initDb` for the canonical example.
+```js
+try {
+  db.exec('ALTER TABLE observations ADD COLUMN my_col TEXT');
+} catch (_) {
+  // Column already exists — fine
+}
+```
+
+See the existing migration blocks in `initDb` (e.g. `event_id`, `deleted_at`, `entity_type`) for the canonical pattern. Do **not** use `PRAGMA table_info()` gates — the `try/catch` approach is simpler and already established throughout this file.
 
 ## Testing
 

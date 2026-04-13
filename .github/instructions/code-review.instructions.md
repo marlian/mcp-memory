@@ -68,8 +68,9 @@ If a PR touches `searchMemory`, `collectCandidates`, `hydrateCandidates`, or `sc
 If a PR adds a column to an existing table:
 
 - The column must appear in the `CREATE TABLE IF NOT EXISTS` statement (fresh DBs).
-- A `PRAGMA table_info()` migration block must handle existing DBs with `ALTER TABLE ADD COLUMN`.
-- The migration must be idempotent (re-running on a DB that already has the column must be a no-op).
+- A `try/catch` migration block must handle existing DBs: `try { db.exec('ALTER TABLE ... ADD COLUMN ...') } catch (_) { }`. SQLite raises on duplicate columns — the catch is the idempotency guard.
+- Do **not** flag a migration for lacking a `PRAGMA table_info()` gate — this repo uses `try/catch`, not schema inspection.
+- The migration must be idempotent: re-running `initDb` on a DB that already has the column must not crash.
 
 ### 8. Configuration and hardcoding
 
