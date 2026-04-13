@@ -668,8 +668,8 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
   const terms = q.split(/\s+/).filter(Boolean);
 
   // 1a. FTS5 phrase — multi-term queries only. Adjacent-term match scores higher
-  //     than OR match, so run this first so addCandidate records fts_phrase as
-  //     best_channel for hits that qualify.
+  //     than OR match (weight 1.15 vs 1.0). addCandidate always keeps the highest-
+  //     weight channel regardless of insertion order, so phrase hits win naturally.
   if (terms.length > 1) {
     try {
       const phraseQuery = '"' + terms.map(t => t.replace(/"/g, '')).join(' ') + '"';
