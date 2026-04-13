@@ -248,6 +248,7 @@ function initDb(dbPath) {
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
       entity_type TEXT,
+      deleted_at  TEXT,
       created_at  TEXT DEFAULT (datetime('now')),
       updated_at  TEXT DEFAULT (datetime('now'))
     );
@@ -260,6 +261,7 @@ function initDb(dbPath) {
       confidence     REAL DEFAULT 1.0,
       access_count   INTEGER DEFAULT 0,
       last_accessed  TEXT,
+      deleted_at     TEXT,
       created_at     TEXT DEFAULT (datetime('now'))
     );
 
@@ -300,6 +302,16 @@ function initDb(dbPath) {
   } catch (_) {
     // Column already exists — fine
   }
+  try {
+    db.exec('ALTER TABLE entities ADD COLUMN deleted_at TEXT');
+  } catch (_) {
+    // Column already exists — fine
+  }
+  try {
+    db.exec('ALTER TABLE observations ADD COLUMN deleted_at TEXT');
+  } catch (_) {
+    // Column already exists — fine
+  }
   // Migration: denormalize entity_type into observations so FTS5 delete can
   // always use the exact value that was originally indexed (entity_type on the
   // entities row may be updated later by upsertEntity, causing mismatches).
@@ -310,6 +322,16 @@ function initDb(dbPath) {
   }
   try {
     db.exec('CREATE INDEX IF NOT EXISTS idx_obs_event ON observations(event_id)');
+  } catch (_) {
+    // Index already exists — fine
+  }
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entities_deleted ON entities(deleted_at)');
+  } catch (_) {
+    // Index already exists — fine
+  }
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_obs_deleted ON observations(deleted_at)');
   } catch (_) {
     // Index already exists — fine
   }
@@ -347,11 +369,11 @@ function decayedConfidence(obs, halfLifeWeeks) {
 // DB helpers
 // ---------------------------------------------------------------------------
 function upsertEntity(db, name, entityType) {
-  const existing = db.prepare('SELECT id, entity_type FROM entities WHERE name = ?').get(name);
+  const existing = db.prepare('SELECT id, entity_type, deleted_at FROM entities WHERE name = ?').get(name);
   if (existing) {
-    if (entityType && entityType !== existing.entity_type) {
-      db.prepare('UPDATE entities SET entity_type = ?, updated_at = datetime(\'now\') WHERE id = ?')
-        .run(entityType, existing.id);
+    if ((entityType && entityType !== existing.entity_type) || existing.deleted_at) {
+      db.prepare('UPDATE entities SET entity_type = ?, deleted_at = NULL, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(entityType || existing.entity_type || null, existing.id);
     }
     return existing.id;
   }
@@ -362,7 +384,7 @@ function upsertEntity(db, name, entityType) {
 function addObservation(db, entityId, content, source = 'user', confidence = 1.0, eventId = null) {
   // Smart append — skip exact duplicates
   const dupe = db.prepare(
-    'SELECT id FROM observations WHERE entity_id = ? AND content = ?'
+    'SELECT id FROM observations WHERE entity_id = ? AND content = ? AND deleted_at IS NULL'
   ).get(entityId, content);
   if (dupe) return dupe.id;
 
@@ -388,7 +410,7 @@ function addObservation(db, entityId, content, source = 'user', confidence = 1.0
 function touchObservations(db, observationIds) {
   if (!observationIds.length) return;
   const stmt = db.prepare(
-    'UPDATE observations SET access_count = access_count + 1, last_accessed = datetime(\'now\') WHERE id = ?'
+    'UPDATE observations SET access_count = access_count + 1, last_accessed = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL'
   );
   for (const id of observationIds) {
     stmt.run(id);
@@ -407,7 +429,7 @@ function createEvent(db, label, eventDate, eventType, context, expiresAt) {
 
 function searchEvents(db, query, opts = {}) {
   const { event_type, date_from, date_to, limit = 20 } = opts;
-  let sql = 'SELECT e.*, COUNT(o.id) AS observation_count FROM events e LEFT JOIN observations o ON o.event_id = e.id WHERE 1=1';
+  let sql = 'SELECT e.*, COUNT(o.id) AS observation_count FROM events e LEFT JOIN observations o ON o.event_id = e.id AND o.deleted_at IS NULL WHERE 1=1';
   const params = [];
 
   if (query) {
@@ -444,7 +466,7 @@ function getFullEvent(db, eventId, halfLifeWeeks = null) {
     SELECT o.*, e.name AS entity_name, e.entity_type
     FROM observations o
     JOIN entities e ON o.entity_id = e.id
-    WHERE o.event_id = ?
+    WHERE o.event_id = ? AND o.deleted_at IS NULL AND e.deleted_at IS NULL
     ORDER BY o.created_at ASC
   `).all(eventId);
 
@@ -452,7 +474,7 @@ function getFullEvent(db, eventId, halfLifeWeeks = null) {
   touchObservations(db, observations.map(o => o.id));
 
   // Group by entity
-  const grouped = {};
+  const grouped = Object.create(null);
   for (const obs of observations) {
     if (!grouped[obs.entity_name]) {
       grouped[obs.entity_name] = {
@@ -584,7 +606,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
   const exactMatches = db.prepare(`
     SELECT o.id FROM observations o
     JOIN entities e ON o.entity_id = e.id
-    WHERE e.name = ? COLLATE NOCASE
+    WHERE o.deleted_at IS NULL AND e.deleted_at IS NULL AND e.name = ? COLLATE NOCASE
     ORDER BY o.id LIMIT ?
   `).all(q, collectLimit);
   for (const r of exactMatches) addCandidate(candidates, r.id, 'entity_exact', maxCandidates);
@@ -594,7 +616,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
     const likeMatches = db.prepare(`
       SELECT o.id FROM observations o
       JOIN entities e ON o.entity_id = e.id
-      WHERE e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
+      WHERE o.deleted_at IS NULL AND e.deleted_at IS NULL AND e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
       ORDER BY o.id LIMIT ?
     `).all(`%${q}%`, q, collectLimit);
     for (const r of likeMatches) addCandidate(candidates, r.id, 'entity_like', maxCandidates);
@@ -606,7 +628,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
       if (candidates.size >= maxCandidates) break;
       const contentResults = db.prepare(`
         SELECT o.id FROM observations o
-        WHERE o.content LIKE ?
+        WHERE o.deleted_at IS NULL AND o.content LIKE ?
         ORDER BY o.id LIMIT ?
       `).all(`%${term}%`, collectLimit);
       for (const r of contentResults) addCandidate(candidates, r.id, 'content_like', maxCandidates);
@@ -620,7 +642,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
       const typeResults = db.prepare(`
         SELECT o.id FROM observations o
         JOIN entities e ON o.entity_id = e.id
-        WHERE e.entity_type LIKE ?
+        WHERE o.deleted_at IS NULL AND e.deleted_at IS NULL AND e.entity_type LIKE ?
         ORDER BY o.id LIMIT ?
       `).all(`%${term}%`, collectLimit);
       for (const r of typeResults) addCandidate(candidates, r.id, 'type_like', maxCandidates);
@@ -632,7 +654,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
     const eventMatches = db.prepare(`
       SELECT o.id FROM observations o
       JOIN events ev ON o.event_id = ev.id
-      WHERE ev.label LIKE ?
+      WHERE o.deleted_at IS NULL AND ev.label LIKE ?
       ORDER BY o.id LIMIT ?
     `).all(`%${q}%`, collectLimit);
     for (const r of eventMatches) addCandidate(candidates, r.id, 'event_label', maxCandidates);
@@ -652,7 +674,7 @@ function hydrateCandidates(db, candidateMap) {
     FROM observations o
     JOIN entities e ON o.entity_id = e.id
     LEFT JOIN events ev ON o.event_id = ev.id
-    WHERE o.id IN (${placeholders})
+    WHERE o.id IN (${placeholders}) AND o.deleted_at IS NULL AND e.deleted_at IS NULL
   `).all(...ids);
 }
 
@@ -741,27 +763,27 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
 }
 
 function getEntityGraph(db, entityName, halfLifeWeeks = null) {
-  const entity = db.prepare('SELECT * FROM entities WHERE name = ?').get(entityName);
+  const entity = db.prepare('SELECT * FROM entities WHERE name = ? AND deleted_at IS NULL').get(entityName);
   if (!entity) return null;
 
   const observations = db.prepare(`
     SELECT o.*, ev.id AS event_id, ev.label AS event_label, ev.event_date, ev.event_type AS ev_type
     FROM observations o
     LEFT JOIN events ev ON o.event_id = ev.id
-    WHERE o.entity_id = ?
+    WHERE o.entity_id = ? AND o.deleted_at IS NULL
     ORDER BY o.created_at DESC
   `).all(entity.id);
 
   const relationsFrom = db.prepare(`
     SELECT r.*, e.name AS target_name, e.entity_type AS target_type
     FROM relations r JOIN entities e ON r.to_entity_id = e.id
-    WHERE r.from_entity_id = ?
+    WHERE r.from_entity_id = ? AND e.deleted_at IS NULL
   `).all(entity.id);
 
   const relationsTo = db.prepare(`
     SELECT r.*, e.name AS source_name, e.entity_type AS source_type
     FROM relations r JOIN entities e ON r.from_entity_id = e.id
-    WHERE r.to_entity_id = ?
+    WHERE r.to_entity_id = ? AND e.deleted_at IS NULL
   `).all(entity.id);
 
   // Touch observations
@@ -1025,30 +1047,32 @@ function handleTool(defaultDb, name, args) {
           // special delete.  Reading e.entity_type here would be wrong because
           // upsertEntity can change it after the FTS entry was written.
           const obs = db.prepare(
-            'SELECT o.content, o.entity_type, e.name AS entity_name FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.id = ?'
+            'SELECT o.content, o.entity_type, e.name AS entity_name FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.id = ? AND o.deleted_at IS NULL AND e.deleted_at IS NULL'
           ).get(args.observation_id);
           if (obs) {
             // Contentless FTS5 tables don't support DELETE; use the special delete command instead
             ftsDelete.run(args.observation_id, obs.entity_name, obs.content, obs.entity_type || '');
           }
-          const info = db.prepare('DELETE FROM observations WHERE id = ?').run(args.observation_id);
+          const info = db.prepare('UPDATE observations SET deleted_at = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL').run(args.observation_id);
           return { deleted: info.changes > 0, type: 'observation', id: args.observation_id };
         })();
         return result;
       }
       if (args.entity) {
-        const entity = db.prepare('SELECT id FROM entities WHERE name = ?').get(args.entity);
+        const entity = db.prepare('SELECT id FROM entities WHERE name = ? AND deleted_at IS NULL').get(args.entity);
         if (!entity) return { deleted: false, message: `Entity "${args.entity}" not found` };
         db.transaction(() => {
           // Read entity_type from the observation row (the indexed snapshot), not
           // from entities, to guarantee the FTS5 delete matches what was indexed.
           const observations = db.prepare(
-            'SELECT o.id, o.content, o.entity_type, e.name AS entity_name FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.entity_id = ?'
+            'SELECT o.id, o.content, o.entity_type, e.name AS entity_name FROM observations o JOIN entities e ON e.id = o.entity_id WHERE o.entity_id = ? AND o.deleted_at IS NULL'
           ).all(entity.id);
           for (const o of observations) {
             ftsDelete.run(o.id, o.entity_name, o.content, o.entity_type || '');
           }
-          db.prepare('DELETE FROM entities WHERE id = ?').run(entity.id);
+          db.prepare('DELETE FROM relations WHERE from_entity_id = ? OR to_entity_id = ?').run(entity.id, entity.id);
+          db.prepare('UPDATE observations SET deleted_at = datetime(\'now\') WHERE entity_id = ? AND deleted_at IS NULL').run(entity.id);
+          db.prepare('UPDATE entities SET deleted_at = datetime(\'now\'), updated_at = datetime(\'now\') WHERE id = ? AND deleted_at IS NULL').run(entity.id);
         })();
         return { deleted: true, type: 'entity', name: args.entity };
       }
@@ -1061,14 +1085,15 @@ function handleTool(defaultDb, name, args) {
       if (args.entity_type) {
         rows = db.prepare(`
           SELECT e.*, COUNT(o.id) AS observation_count
-          FROM entities e LEFT JOIN observations o ON o.entity_id = e.id
-          WHERE e.entity_type = ?
+          FROM entities e LEFT JOIN observations o ON o.entity_id = e.id AND o.deleted_at IS NULL
+          WHERE e.deleted_at IS NULL AND e.entity_type = ?
           GROUP BY e.id ORDER BY e.updated_at DESC LIMIT ?
         `).all(args.entity_type, limit);
       } else {
         rows = db.prepare(`
           SELECT e.*, COUNT(o.id) AS observation_count
-          FROM entities e LEFT JOIN observations o ON o.entity_id = e.id
+          FROM entities e LEFT JOIN observations o ON o.entity_id = e.id AND o.deleted_at IS NULL
+          WHERE e.deleted_at IS NULL
           GROUP BY e.id ORDER BY e.updated_at DESC LIMIT ?
         `).all(limit);
       }

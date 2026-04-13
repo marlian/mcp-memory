@@ -66,23 +66,34 @@ describe('remember + recall', () => {
 // forget
 // ---------------------------------------------------------------------------
 describe('forget', () => {
-  it('should delete by observation_id without FTS5 errors', () => {
+  it('should soft-delete by observation_id without FTS5 errors', () => {
     const eid = upsertEntity(testDb, 'ForgetObsEntity', 'test');
     const obsId = addObservation(testDb, eid, 'observation to forget', 'user', 1.0);
     const result = handleTool(testDb, 'forget', { observation_id: obsId });
     assert.ok(result.deleted, 'forget by observation_id did not delete');
-    const row = testDb.prepare('SELECT id FROM observations WHERE id = ?').get(obsId);
-    assert.equal(row, undefined, 'observation still in DB after delete');
+    const row = testDb.prepare('SELECT id, deleted_at FROM observations WHERE id = ?').get(obsId);
+    assert.ok(row, 'observation row missing after soft delete');
+    assert.ok(row.deleted_at, 'observation was not marked deleted');
+    const recalled = searchMemory(testDb, 'observation to forget', 5, 12);
+    assert.equal(recalled.find(r => r.id === obsId), undefined, 'soft-deleted observation still appears in recall');
   });
 
-  it('should delete by entity name (cascade)', () => {
+  it('should soft-delete by entity name and hide it from listing/recall', () => {
     const eid = upsertEntity(testDb, 'EntityToForget', 'test');
-    addObservation(testDb, eid, 'entity observation 1', 'user', 1.0);
-    addObservation(testDb, eid, 'entity observation 2', 'user', 1.0);
+    const obs1 = addObservation(testDb, eid, 'entity observation 1', 'user', 1.0);
+    const obs2 = addObservation(testDb, eid, 'entity observation 2', 'user', 1.0);
     const result = handleTool(testDb, 'forget', { entity: 'EntityToForget' });
     assert.ok(result.deleted, 'forget by entity did not delete');
-    const row = testDb.prepare('SELECT id FROM entities WHERE name = ?').get('EntityToForget');
-    assert.equal(row, undefined, 'entity still in DB after delete');
+    const entityRow = testDb.prepare('SELECT id, deleted_at FROM entities WHERE name = ?').get('EntityToForget');
+    assert.ok(entityRow, 'entity row missing after soft delete');
+    assert.ok(entityRow.deleted_at, 'entity was not marked deleted');
+    const deletedObs = testDb.prepare('SELECT id, deleted_at FROM observations WHERE id IN (?, ?) ORDER BY id').all(obs1, obs2);
+    assert.equal(deletedObs.length, 2, 'expected both observations to remain in DB');
+    assert.ok(deletedObs.every(o => o.deleted_at), 'entity observations were not marked deleted');
+    const list = handleTool(testDb, 'list_entities', {});
+    assert.equal(list.entities.find(e => e.name === 'EntityToForget'), undefined, 'deleted entity still appears in list_entities');
+    const recallEntity = handleTool(testDb, 'recall_entity', { entity: 'EntityToForget' });
+    assert.equal(recallEntity.found, false, 'deleted entity still appears in recall_entity');
   });
 
   it('should use original indexed entity_type for FTS delete after type change', () => {
@@ -93,8 +104,44 @@ describe('forget', () => {
     // forget must not throw (stale entity_type must not be used)
     const result = handleTool(testDb, 'forget', { observation_id: obsId });
     assert.ok(result.deleted, 'forget after entity_type change did not delete');
-    const row = testDb.prepare('SELECT id FROM observations WHERE id = ?').get(obsId);
-    assert.equal(row, undefined, 'observation still in DB after type-changed delete');
+    const row = testDb.prepare('SELECT id, deleted_at FROM observations WHERE id = ?').get(obsId);
+    assert.ok(row, 'observation row missing after soft delete');
+    assert.ok(row.deleted_at, 'observation was not marked deleted after type-changed forget');
+  });
+
+  it('should allow re-remembering a forgotten entity name', () => {
+    const eid = upsertEntity(testDb, 'PhoenixEntity', 'test');
+    addObservation(testDb, eid, 'first life', 'user', 1.0);
+    handleTool(testDb, 'forget', { entity: 'PhoenixEntity' });
+
+    const rememberResult = handleTool(testDb, 'remember', {
+      entity: 'PhoenixEntity',
+      entity_type: 'test',
+      observation: 'second life',
+    });
+    assert.ok(rememberResult.stored, 're-remember should store after soft delete');
+
+    const recall = searchMemory(testDb, 'second life', 5, 12);
+    assert.ok(recall.some(r => r.entity_name === 'PhoenixEntity'), 'revived entity should be searchable');
+  });
+
+  it('should not resurrect old relations when a forgotten entity name is re-remembered', () => {
+    const sourceId = upsertEntity(testDb, 'RelationSource', 'test');
+    const zombieId = upsertEntity(testDb, 'ZombieEntity', 'test');
+    addObservation(testDb, zombieId, 'zombie first life', 'user', 1.0);
+    handleTool(testDb, 'relate', { from: 'RelationSource', to: 'ZombieEntity', relation_type: 'knows' });
+
+    handleTool(testDb, 'forget', { entity: 'ZombieEntity' });
+    handleTool(testDb, 'remember', {
+      entity: 'ZombieEntity',
+      entity_type: 'test',
+      observation: 'zombie second life',
+    });
+
+    const revived = handleTool(testDb, 'recall_entity', { entity: 'ZombieEntity' });
+    assert.equal(revived.found, true, 'revived entity should exist');
+    assert.deepStrictEqual(revived.relations_incoming, [], 'old incoming relations should not resurrect');
+    assert.deepStrictEqual(revived.relations_outgoing, [], 'old outgoing relations should not resurrect');
   });
 });
 
@@ -126,6 +173,23 @@ describe('events', () => {
     addObservation(testDb, eid, 'event observation', 'user', 1.0, eventId);
     const event = getFullEvent(testDb, eventId, 12);
     assert.ok(event, 'event recall failed');
+  });
+
+  it('should exclude soft-deleted observations from event queries', () => {
+    const eid = upsertEntity(testDb, 'DeletedEventEntity', 'test');
+    const eventId = createEvent(testDb, 'Forget event', null, 'test', null, null);
+    const obsId = addObservation(testDb, eid, 'event observation to delete', 'user', 1.0, eventId);
+
+    handleTool(testDb, 'forget', { observation_id: obsId });
+
+    const fullEvent = getFullEvent(testDb, eventId, 12);
+    assert.ok(fullEvent, 'event should still exist');
+    assert.equal(fullEvent.total_observations, 0, 'deleted event observation should not appear in getFullEvent');
+
+    const eventRows = handleTool(testDb, 'recall_events', { query: 'Forget event', limit: 5 });
+    const matched = eventRows.events.find(e => e.id === eventId);
+    assert.ok(matched, 'event should still be discoverable');
+    assert.equal(matched.observation_count, 0, 'deleted event observation should not count in recall_events');
   });
 });
 
