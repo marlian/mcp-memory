@@ -798,7 +798,13 @@ function scoreCandidates(observations, candidateMap, halfLifeWeeks, limit) {
 }
 
 // Maximum content length for compact recall responses.
-const COMPACT_SNIPPET_LENGTH = 120;
+const DEFAULT_COMPACT_SNIPPET_LENGTH = 120;
+const COMPACT_SNIPPET_LENGTH = (() => {
+  const parsed = Number.parseInt(process.env.COMPACT_SNIPPET_LENGTH, 10);
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_COMPACT_SNIPPET_LENGTH;
+})();
 
 function groupResults(results, compact = false) {
   const grouped = Object.create(null);
