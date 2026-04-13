@@ -197,6 +197,173 @@ const MEMORY_HALF_LIFE_WEEKS = parseFloat(process.env.MEMORY_HALF_LIFE_WEEKS || 
 const PROJECT_MEMORY_HALF_LIFE_WEEKS = parseFloat(process.env.PROJECT_MEMORY_HALF_LIFE_WEEKS || '52');
 
 // ---------------------------------------------------------------------------
+// Telemetry (opt-in — zero overhead when MEMORY_TELEMETRY_PATH is unset)
+// ---------------------------------------------------------------------------
+const TELEMETRY_PATH = process.env.MEMORY_TELEMETRY_PATH || null;
+
+let _telemetryDb = null;
+let _telemetryStmts = null;
+
+// Client identity resolved at startup — protocol wins, env fills gaps.
+const _clientIdentity = { name: 'unknown', version: null, source: 'none' };
+
+function detectClientFromEnv() {
+  const e = process.env;
+  if (e.KILO)                                  return { name: 'kilo',           version: e.KILOCODE_VERSION || null };
+  if (e.CLAUDE_CODE_SSE_PORT)                  return { name: 'claude-code',    version: null };
+  if (e.CURSOR_TRACE_ID)                       return { name: 'cursor',         version: null };
+  if (e.WINDSURF_EXTENSION_ID)                 return { name: 'windsurf',       version: null };
+  if (e.VSCODE_MCP_HTTP_PREFER !== undefined)  return { name: 'vscode-copilot', version: null };
+  if (e.TERM_PROGRAM === 'vscode')             return { name: 'vscode-unknown', version: null };
+  return null;
+}
+
+function initTelemetryDb(dbPath) {
+  const tdb = new Database(dbPath);
+  tdb.pragma('journal_mode = WAL');
+  tdb.exec(`
+    CREATE TABLE IF NOT EXISTS tool_calls (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+      tool           TEXT NOT NULL,
+      client_name    TEXT,
+      client_version TEXT,
+      client_source  TEXT,
+      db_scope       TEXT NOT NULL DEFAULT 'global',
+      project_path   TEXT,
+      duration_ms    REAL,
+      args_summary   TEXT,
+      result_summary TEXT,
+      is_error       INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS search_metrics (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      tool_call_id     INTEGER REFERENCES tool_calls(id),
+      query            TEXT,
+      channels         TEXT,
+      candidates_total INTEGER,
+      results_returned INTEGER,
+      limit_requested  INTEGER,
+      score_min        REAL,
+      score_max        REAL,
+      score_median     REAL,
+      compact          INTEGER DEFAULT 0
+    );
+  `);
+  return tdb;
+}
+
+let _telemetryInitFailed = false;
+
+function getTelemetryDb() {
+  if (!TELEMETRY_PATH || _telemetryInitFailed) return null;
+  if (_telemetryDb) return _telemetryDb;
+  try {
+    _telemetryDb = initTelemetryDb(TELEMETRY_PATH);
+    _telemetryStmts = {
+      insertCall: _telemetryDb.prepare(`
+        INSERT INTO tool_calls (tool, client_name, client_version, client_source, db_scope, project_path, duration_ms, args_summary, result_summary, is_error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `),
+      insertSearch: _telemetryDb.prepare(`
+        INSERT INTO search_metrics (tool_call_id, query, channels, candidates_total, results_returned, limit_requested, score_min, score_max, score_median, compact)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `),
+    };
+  } catch (err) {
+    _telemetryInitFailed = true;
+    process.stderr.write(`[memory] telemetry init failed (disabled for this session): ${err.message}\n`);
+    return null;
+  }
+  return _telemetryDb;
+}
+
+// Sanitize args for telemetry — strip observation/content values, keep structure
+function sanitizeArgs(name, args) {
+  if (!args) return null;
+  const safe = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (['observation', 'content', 'context'].includes(k)) {
+      safe[k] = typeof v === 'string' ? `<${v.length} chars>` : v;
+    } else if (k === 'facts' && Array.isArray(v)) {
+      safe[k] = `<${v.length} facts>`;
+    } else if (k === 'observations' && Array.isArray(v)) {
+      safe[k] = `<${v.length} observations>`;
+    } else {
+      safe[k] = v;
+    }
+  }
+  return JSON.stringify(safe);
+}
+
+// Summarize result for telemetry — counts only, never data
+function summarizeResult(name, result) {
+  if (!result) return null;
+  const s = {};
+  if (result.total_facts !== undefined) s.total_facts = result.total_facts;
+  if (result.total !== undefined) s.total = result.total;
+  if (result.results && Array.isArray(result.results)) s.entity_groups = result.results.length;
+  if (result.entities && Array.isArray(result.entities)) s.entities = result.entities.length;
+  if (result.events && Array.isArray(result.events)) s.events = result.events.length;
+  if (result.stored !== undefined) s.stored = result.stored;
+  if (result.deleted !== undefined) s.deleted = result.deleted;
+  if (result.created !== undefined) s.created = result.created;
+  if (result.found !== undefined) s.found = result.found;
+  if (result.observations_attached !== undefined) s.observations_attached = result.observations_attached;
+  if (result.compact) s.compact = true;
+  return JSON.stringify(s);
+}
+
+function logToolCall(name, args, result, durationMs, isError) {
+  if (!TELEMETRY_PATH) return null;
+  const tdb = getTelemetryDb();
+  if (!tdb) return null;
+  try {
+    const info = _telemetryStmts.insertCall.run(
+      name,
+      _clientIdentity.name,
+      _clientIdentity.version,
+      _clientIdentity.source,
+      args && args.project ? 'project' : 'global',
+      args && args.project ? resolveProjectPath(args.project) : null,
+      durationMs,
+      sanitizeArgs(name, args),
+      isError ? JSON.stringify({ error: true }) : summarizeResult(name, result),
+      isError ? 1 : 0,
+    );
+    return info.lastInsertRowid;
+  } catch (err) {
+    process.stderr.write(`[memory] telemetry log failed: ${err.message}\n`);
+    return null;
+  }
+}
+
+// Store for search metrics emitted by searchMemory — read by the call handler
+let _lastSearchMetrics = null;
+
+function logSearchMetrics(toolCallId, metrics) {
+  if (!TELEMETRY_PATH || !toolCallId) return;
+  const tdb = getTelemetryDb();
+  if (!tdb || !_telemetryStmts) return;
+  try {
+    _telemetryStmts.insertSearch.run(
+      toolCallId,
+      metrics.query,
+      JSON.stringify(metrics.channels),
+      metrics.candidates_total,
+      metrics.results_returned,
+      metrics.limit_requested,
+      metrics.score_min,
+      metrics.score_max,
+      metrics.score_median,
+      metrics.compact ? 1 : 0,
+    );
+  } catch (err) {
+    process.stderr.write(`[memory] telemetry search log failed: ${err.message}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-tenant project memory
 // ---------------------------------------------------------------------------
 const projectDbs = new Map();
@@ -872,6 +1039,29 @@ function searchMemory(db, query, limit = 20, halfLifeWeeks = null) {
   // Touch only the observations actually returned — not the broader candidate pool
   touchObservations(db, ranked.map(r => r.id));
 
+  // Emit search metrics for telemetry (side-channel, never in response)
+  if (TELEMETRY_PATH) {
+    const channelCounts = {};
+    for (const c of candidates.values()) {
+      for (const ch of c.channels) {
+        channelCounts[ch] = (channelCounts[ch] || 0) + 1;
+      }
+    }
+    const scores = ranked.map(r => r.composite_score);
+    scores.sort((a, b) => a - b);
+    _lastSearchMetrics = {
+      query: q,
+      channels: channelCounts,
+      candidates_total: candidates.size,
+      results_returned: ranked.length,
+      limit_requested: limit,
+      score_min: scores.length ? scores[0] : null,
+      score_max: scores.length ? scores[scores.length - 1] : null,
+      score_median: scores.length ? scores[Math.floor(scores.length / 2)] : null,
+      compact: false, // set by caller
+    };
+  }
+
   return ranked;
 }
 
@@ -1321,6 +1511,23 @@ async function main() {
     { capabilities: { tools: {} } }
   );
 
+  // Capture client identity from MCP protocol handshake
+  server.oninitialized = () => {
+    const ci = server.getClientVersion();
+    if (ci) {
+      _clientIdentity.name = ci.name;
+      _clientIdentity.version = ci.version;
+      _clientIdentity.source = 'protocol';
+    } else {
+      const envHint = detectClientFromEnv();
+      if (envHint) {
+        _clientIdentity.name = envHint.name;
+        _clientIdentity.version = envHint.version;
+        _clientIdentity.source = 'env';
+      }
+    }
+  };
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOLS,
   }));
@@ -1389,12 +1596,28 @@ async function main() {
       }
     }
 
+    const t0 = TELEMETRY_PATH ? performance.now() : 0;
+    if (TELEMETRY_PATH) _lastSearchMetrics = null;
     try {
       const result = handleTool(db, name, safeArgs);
+
+      if (TELEMETRY_PATH) {
+        const durationMs = performance.now() - t0;
+        const callId = logToolCall(name, safeArgs, result, durationMs, false);
+        if (callId && _lastSearchMetrics) {
+          if (name === 'recall' && safeArgs.compact) _lastSearchMetrics.compact = true;
+          logSearchMetrics(callId, _lastSearchMetrics);
+        }
+      }
+
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
     } catch (err) {
+      if (TELEMETRY_PATH) {
+        const durationMs = performance.now() - t0;
+        logToolCall(name, safeArgs, null, durationMs, true);
+      }
       return {
         content: [{ type: 'text', text: JSON.stringify({
           error: err.message,
@@ -1409,10 +1632,11 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Graceful shutdown — close default + all project DBs
+  // Graceful shutdown — close default + all project DBs + telemetry
   const shutdown = () => {
     db.close();
     for (const pdb of projectDbs.values()) pdb.close();
+    if (_telemetryDb) { try { _telemetryDb.close(); } catch (_) { /* best-effort */ } }
     process.exit(0);
   };
   process.on('SIGINT', shutdown);
@@ -1457,4 +1681,9 @@ module.exports = {
   EXAMPLES,
   DEFAULT_EXAMPLES,
   TOOLS,
+  // Telemetry internals (exported for testing)
+  detectClientFromEnv,
+  initTelemetryDb,
+  sanitizeArgs,
+  summarizeResult,
 };
