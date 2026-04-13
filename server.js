@@ -561,8 +561,11 @@ function addCandidate(candidateMap, id, channel, maxCandidates, ftsPosition = nu
 }
 
 function collectCandidates(db, query, collectLimit, maxCandidates) {
+  const q = query.trim();
+  if (!q) return new Map();
+
   const candidates = new Map();
-  const terms = query.split(/\s+/).filter(Boolean);
+  const terms = q.split(/\s+/).filter(Boolean);
 
   // 1. FTS5 — ORDER BY rank gives best-to-worst; track position index
   try {
@@ -583,7 +586,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
     JOIN entities e ON o.entity_id = e.id
     WHERE e.name = ? COLLATE NOCASE
     ORDER BY o.id LIMIT ?
-  `).all(query, collectLimit);
+  `).all(q, collectLimit);
   for (const r of exactMatches) addCandidate(candidates, r.id, 'entity_exact', maxCandidates);
 
   // 3. Entity LIKE — query is substring (excluding exact hits)
@@ -593,7 +596,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
       JOIN entities e ON o.entity_id = e.id
       WHERE e.name LIKE ? COLLATE NOCASE AND e.name != ? COLLATE NOCASE
       ORDER BY o.id LIMIT ?
-    `).all(`%${query}%`, query, collectLimit);
+    `).all(`%${q}%`, q, collectLimit);
     for (const r of likeMatches) addCandidate(candidates, r.id, 'entity_like', maxCandidates);
   }
 
@@ -631,7 +634,7 @@ function collectCandidates(db, query, collectLimit, maxCandidates) {
       JOIN events ev ON o.event_id = ev.id
       WHERE ev.label LIKE ?
       ORDER BY o.id LIMIT ?
-    `).all(`%${query}%`, collectLimit);
+    `).all(`%${q}%`, collectLimit);
     for (const r of eventMatches) addCandidate(candidates, r.id, 'event_label', maxCandidates);
   }
 
@@ -678,7 +681,7 @@ function scoreCandidates(observations, candidateMap, halfLifeWeeks, limit) {
 }
 
 function groupResults(results) {
-  const grouped = {};
+  const grouped = Object.create(null);
   for (const r of results) {
     if (!grouped[r.entity_name]) {
       grouped[r.entity_name] = {

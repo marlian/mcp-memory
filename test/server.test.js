@@ -371,6 +371,12 @@ describe('composite ranking', () => {
     assert.equal(candidate.best_channel, 'fts', 'expected strongest channel to remain fts');
   });
 
+  it('collectCandidates should return an empty Map for blank queries', () => {
+    const blank = collectCandidates(rankDb, '   ', 30, 200);
+    assert.ok(blank instanceof Map, 'blank query should still return a Map');
+    assert.equal(blank.size, 0, 'blank query should not collect any candidates');
+  });
+
   it('hydrateCandidates + scoreCandidates should preserve ranking pipeline behavior', () => {
     const limit = 3;
     const collectLimit = limit * 3;
@@ -397,6 +403,50 @@ describe('composite ranking', () => {
     assert.equal(typeof grouped.results[0].entity_name, 'string');
     assert.ok(Array.isArray(grouped.results[0].observations), 'group observations should be an array');
     assert.equal(typeof grouped.results[0].observations[0].confidence, 'number');
+  });
+
+  it('groupResults should safely handle prototype-like entity names', () => {
+    const protoEntity = upsertEntity(rankDb, '__proto__', 'test');
+    const ctorEntity = upsertEntity(rankDb, 'constructor', 'test');
+    const protoObs = addObservation(rankDb, protoEntity, 'proto pollution guard', 'user', 1.0);
+    const ctorObs = addObservation(rankDb, ctorEntity, 'constructor pollution guard', 'user', 1.0);
+
+    const grouped = groupResults([
+      {
+        id: protoObs,
+        entity_name: '__proto__',
+        entity_type: 'test',
+        content: 'proto pollution guard',
+        effective_confidence: 1.0,
+        composite_score: 1.0,
+        source: 'user',
+        access_count: 0,
+        created_at: '2026-04-13T00:00:00',
+      },
+      {
+        id: ctorObs,
+        entity_name: 'constructor',
+        entity_type: 'test',
+        content: 'constructor pollution guard',
+        effective_confidence: 0.9,
+        composite_score: 0.9,
+        source: 'user',
+        access_count: 0,
+        created_at: '2026-04-13T00:00:01',
+      },
+    ]);
+
+    assert.equal(grouped.total_facts, 2);
+    assert.deepStrictEqual(
+      grouped.results.map(r => r.entity_name).sort(),
+      ['__proto__', 'constructor'],
+      'prototype-like entity names should remain grouped as normal data'
+    );
+    assert.deepStrictEqual(
+      grouped.results.map(r => r.observations[0].id).sort((a, b) => a - b),
+      [protoObs, ctorObs],
+      'observations should remain attached to their special-name entities'
+    );
   });
 });
 
