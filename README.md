@@ -1,5 +1,7 @@
 # mcp-memory
 
+> ⚠️ **No longer maintained.** Active development has moved to **[workmem](https://github.com/marlian/workmem)** — a Go port of this server with the same MCP contract and tool surface, distributed as a single static binary (no Node, no `npm install`). New users should start there. This repository will be archived soon.
+
 [![CI](https://github.com/marlian/mcp-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/marlian/mcp-memory/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/marlian/mcp-memory)](https://github.com/marlian/mcp-memory/releases/latest)
 [![License](https://img.shields.io/github/license/marlian/mcp-memory)](LICENSE)
